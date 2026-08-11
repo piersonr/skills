@@ -1,28 +1,49 @@
-# request-pov
+# Skills
 
-Ask your coding agent to get an independent second opinion from a model in
-another AI lineage.
+Portable agent skills for coding agents such as Codex and Claude Code.
 
-`request-pov` is a portable agent skill for Codex and Claude Code. It sends a
-focused question and only the context you choose through OpenRouter, then asks
-your current agent to compare that outside perspective with its own analysis.
+## Available skills
 
-## The easy install
+| Skill | What it does |
+| --- | --- |
+| [`request-pov`](request-pov/) | Gets an independent second opinion from a model in another AI lineage through OpenRouter. |
+
+## Install `request-pov`
+
+### Before you begin
+
+This works in the **Codex coding agent** (desktop or CLI) and **Claude Code**.
+It cannot install itself in an ordinary ChatGPT or Claude web conversation,
+because those chats do not have access to your computer's persistent skill
+directories.
+
+You will need:
+
+- Git and Python 3.10 or newer
+- An [OpenRouter](https://openrouter.ai/) account
+- An OpenRouter API key and enough account credit for the model you call
+
+Never paste an API key into an agent conversation. Set it privately in a
+separate terminal when the agent gives you instructions.
+
+### The easy install
 
 Paste this into Codex or Claude Code:
 
 ```text
-Install the request-pov skill from https://github.com/piersonr/request-pov/tree/main/skills/request-pov for this coding agent. Detect whether you are running in Codex or Claude Code and place it in the appropriate user-level skills directory so it works across projects. If both agents are installed, make the skill available to both without maintaining duplicate copies. Help me create an OpenRouter API key if I do not already have one, and store it securely as OPENROUTER_API_KEY. Never display, log, or commit the key. Run the bundled unit tests and a dry-run, then tell me what was installed and how to invoke it. Do not make a paid API request until I explicitly approve one.
+Install the request-pov skill for the coding agent you are currently running. This instruction is for Codex or Claude Code, not an ordinary ChatGPT or Claude web conversation.
+
+1. Clone https://github.com/piersonr/skills into a temporary directory.
+2. Copy only the request-pov directory into the current agent's user-level skill directory: ~/.agents/skills/request-pov for Codex, or ~/.claude/skills/request-pov for Claude Code. Install only for the current agent. Do not use a symlink and do not install a second copy for another agent.
+3. Run the bundled unit tests and a dry-run. Do not make a paid API request.
+4. If OPENROUTER_API_KEY is unavailable, do not ask me to paste it into this conversation. Explain how to create an OpenRouter key and add account credit, then give me OS-appropriate instructions to set the variable privately and persistently from a separate terminal. Warn me that I may need to restart the coding agent before it can read the new variable. Never display the key or modify my shell profile, credential store, or .env without my permission.
+5. Show me the installed file tree and the validation results. Tell me whether I need to exit and restart the agent for skill discovery, then give me the exact sentence to invoke request-pov after restarting.
 ```
 
-The agent should handle the file locations and validation. You will need:
+If you use both Codex and Claude Code, repeat the prompt in the other agent.
+Keeping the installations independent avoids symlink and cross-platform issues.
 
-- Codex or Claude Code
-- Python 3.10 or newer
-- An [OpenRouter](https://openrouter.ai/) account, API key, and enough credit for
-  the model you call
-
-## Use it
+## Use `request-pov`
 
 In Codex:
 
@@ -68,14 +89,14 @@ challenging assumptions, comparing architectural tradeoffs, and getting a fresh
 code-review pass. It does not replace tests, required human review, or your own
 judgment.
 
-The skill follows the open [Agent Skills](https://agentskills.io/) format. The
-same `SKILL.md` and Python helper are shared by Codex and Claude Code.
+Each subdirectory in this repository is a self-contained skill following the
+open [Agent Skills](https://agentskills.io/) format.
 
-## Verify the packaged skill
+## Verify `request-pov`
 
 ```bash
-python3 skills/request-pov/scripts/test_request_pov.py
-python3 skills/request-pov/scripts/request_pov.py \
+python3 request-pov/scripts/test_request_pov.py
+python3 request-pov/scripts/request_pov.py \
   --lineage anthropic \
   --prompt "Challenge this harmless test plan" \
   --dry-run
