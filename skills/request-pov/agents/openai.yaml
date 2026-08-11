@@ -1,0 +1,4 @@
+interface:
+  display_name: "Request POV"
+  short_description: "Consult a model from another AI lineage"
+  default_prompt: "Use $request-pov to ask another AI lineage for an independent perspective."
