@@ -24,7 +24,9 @@ You will need:
 - An OpenRouter API key and enough account credit for the model you call
 
 Never paste an API key into an agent conversation. Set it privately in a
-separate terminal when the agent gives you instructions.
+separate terminal when the agent gives you instructions. The helper reads the key
+from the process environment, an explicit `--env-file`, the nearest project
+`.env`, or a user-level config at `~/.config/request-pov/.env`.
 
 ### The easy install
 
@@ -61,9 +63,19 @@ You can also ask naturally: “Get a cross-lineage POV on this diff” or “Wha
 Anthropic challenge about this approach?”
 
 The skill defaults to an Anthropic model when called from an OpenAI agent and an
-OpenAI model when called from an Anthropic agent. Its model slugs can be changed
-with `POV_ANTHROPIC_MODEL`, `POV_OPENAI_MODEL`, or the helper's `--model`
-option.
+OpenAI model when called from an Anthropic agent, and supports xAI as a third
+lineage. You can also name a model class directly — `opus`, `sonnet`, `terra`,
+`sol`, or `grok` — and the helper resolves the nickname to a current slug and its
+lineage:
+
+```text
+Use request-pov to ask sol to challenge this migration plan.
+```
+
+Model slugs can be changed with `POV_ANTHROPIC_MODEL`, `POV_OPENAI_MODEL`,
+`POV_XAI_MODEL`, or the helper's `--model` option. The helper refuses a target in
+the same lineage as the calling agent unless you explicitly allow it, so a
+cross-lineage request cannot quietly become a self-review.
 
 ## What leaves your machine
 
