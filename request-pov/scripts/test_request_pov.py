@@ -82,7 +82,29 @@ class TimingOutHttpResponse(FakeHttpResponse):
         raise socket.timeout("private timeout detail")
 
 
-class RequestPovTests(unittest.TestCase):
+class PovFixture(unittest.TestCase):
+    """Shared fixture: isolated user config, fake transport, common argv."""
+
+    def setUp(self) -> None:
+        # main() appends a history line on every real attempt, so an unisolated suite
+        # writes synthetic latency into the developer's own history file -- and could
+        # read their real OPENROUTER_API_KEY out of the user config while doing it.
+        # Point the whole user-config directory at a throwaway for every test.
+        config_home = tempfile.TemporaryDirectory()
+        self.addCleanup(config_home.cleanup)
+        self.config_home = Path(config_home.name)
+        patcher = mock.patch.dict(
+            os.environ, {"XDG_CONFIG_HOME": str(self.config_home)}, clear=False
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def history_lines(self) -> list[dict[str, object]]:
+        path = self.config_home / "request-pov" / "history.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
     def invoke(
         self,
         argv: list[str],
@@ -111,6 +133,8 @@ class RequestPovTests(unittest.TestCase):
     def base_args(self, *extra: str) -> list[str]:
         return ["--lineage", "anthropic", "--prompt", "Review this harmless plan", *extra]
 
+
+class RequestPovTests(PovFixture):
     def test_successful_human_readable_response_and_default_progress(self) -> None:
         status, stdout, stderr = self.invoke(self.base_args())
         self.assertEqual(0, status)
@@ -922,6 +946,98 @@ class RequestPovTests(unittest.TestCase):
         self.assertEqual(0, status)
         self.assertEqual("dry-run", json.loads(stdout.getvalue())["status"])
         self.assertEqual("ok", json.loads(stdout.getvalue())["diagnostic_code"])
+
+
+class HistoryTests(PovFixture):
+    """The local latency record exists to tune the timeout from evidence."""
+
+    def test_success_records_one_line_with_latency_and_usage(self) -> None:
+        status, _stdout, _stderr = self.invoke(self.base_args("--json"))
+        self.assertEqual(0, status)
+        lines = self.history_lines()
+        self.assertEqual(1, len(lines))
+        entry = lines[0]
+        self.assertEqual("success", entry["status"])
+        self.assertEqual("ok", entry["diagnostic_code"])
+        self.assertEqual(0, entry["exit_code"])
+        self.assertEqual("medium", entry["reasoning_effort"])
+        self.assertEqual(120.0, entry["timeout"])
+        self.assertEqual(6000, entry["max_completion_tokens"])
+        self.assertIsInstance(entry["elapsed_seconds"], float)
+        self.assertEqual(20, entry["usage"]["completion_tokens"])
+
+    def test_timeout_is_recorded_because_failures_are_the_point(self) -> None:
+        # A history of only successes would show a comfortable latency distribution
+        # and argue the 120s default is fine -- the exact wrong conclusion.
+        status, _stdout, _stderr = self.invoke(
+            self.base_args("--json", "--timeout", "0.02"), delay=0.08
+        )
+        self.assertEqual(request_pov.EXIT_TIMEOUT, status)
+        lines = self.history_lines()
+        self.assertEqual(1, len(lines))
+        self.assertEqual("error", lines[0]["status"])
+        self.assertEqual("request_timeout_state_unknown", lines[0]["diagnostic_code"])
+        self.assertEqual(request_pov.EXIT_TIMEOUT, lines[0]["exit_code"])
+        self.assertEqual(0.02, lines[0]["timeout"])
+
+    def test_validation_error_before_the_request_is_not_recorded(self) -> None:
+        status, _stdout, _stderr = self.invoke(["--json", "--lineage", "anthropic"])
+        self.assertEqual(request_pov.EXIT_VALIDATION, status)
+        self.assertEqual([], self.history_lines())
+
+    def test_dry_run_is_not_recorded(self) -> None:
+        status, _stdout, _stderr = self.invoke(self.base_args("--json", "--dry-run"))
+        self.assertEqual(0, status)
+        self.assertEqual([], self.history_lines())
+
+    def test_no_history_opts_out(self) -> None:
+        status, _stdout, _stderr = self.invoke(self.base_args("--json", "--no-history"))
+        self.assertEqual(0, status)
+        self.assertEqual([], self.history_lines())
+
+    def test_history_never_records_question_response_or_context_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp) / "customer-123-evidence.txt"
+            evidence.write_text("Confidential evidence body", encoding="utf-8")
+            status, _stdout, _stderr = self.invoke(
+                self.base_args("--json", "--context-file", str(evidence))
+            )
+        self.assertEqual(0, status)
+        raw = (self.config_home / "request-pov" / "history.jsonl").read_text()
+        self.assertNotIn("Review this harmless plan", raw)
+        self.assertNotIn("Useful POV", raw)
+        self.assertNotIn("Confidential evidence body", raw)
+        self.assertNotIn("customer-123-evidence", raw)
+        # Sizes and counts answer the latency question without carrying the content.
+        self.assertEqual(1, self.history_lines()[0]["context_files"])
+        self.assertGreater(self.history_lines()[0]["prompt_bytes"], 0)
+
+    def test_history_file_is_owner_only(self) -> None:
+        self.invoke(self.base_args("--json"))
+        path = self.config_home / "request-pov" / "history.jsonl"
+        self.assertEqual(0o600, path.stat().st_mode & 0o777)
+
+    def test_appends_rather_than_truncating_across_calls(self) -> None:
+        self.invoke(self.base_args("--json"))
+        self.invoke(self.base_args("--json"))
+        self.assertEqual(2, len(self.history_lines()))
+
+    def test_unwritable_history_never_fails_the_request(self) -> None:
+        # Bookkeeping must not add a failure mode to a request that already succeeded.
+        with mock.patch.object(
+            request_pov, "history_path", side_effect=OSError("read-only filesystem")
+        ):
+            status, stdout, _stderr = self.invoke(self.base_args("--json"))
+        self.assertEqual(0, status)
+        self.assertEqual("success", json.loads(stdout)["status"])
+
+    def test_oversized_history_rotates_once(self) -> None:
+        path = self.config_home / "request-pov" / "history.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x" * (request_pov.MAX_HISTORY_BYTES + 1), encoding="utf-8")
+        self.invoke(self.base_args("--json"))
+        self.assertTrue(path.with_name(path.name + ".1").exists())
+        self.assertEqual(1, len(self.history_lines()))
 
 
 if __name__ == "__main__":

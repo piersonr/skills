@@ -137,6 +137,12 @@ The helper:
   call is not handed a budget that reasoning alone exhausts;
 - does **not** scale `--timeout` the same way — the local deadline is 120 seconds at every
   effort level, so high-effort callers must pass one explicitly (see step 4);
+- appends one metadata-only line per attempted request to
+  `~/.config/request-pov/history.jsonl` (`$XDG_CONFIG_HOME` honored), recording effort,
+  configured budget and timeout, elapsed time, finish reason, usage, and the diagnostic
+  code — failures included. It never records the question, the response, or context file
+  paths, the file is owner-only, and a write failure can never fail the request. Pass
+  `--no-history` to opt out;
 - accepts overrides through `POV_ANTHROPIC_MODEL`, `POV_OPENAI_MODEL`,
   `POV_XAI_MODEL`, or `--model`;
 - rejects overrides that explicitly name the other supported lineage; custom provider
@@ -186,6 +192,42 @@ deciding. Retry at most once only when `retryable` is `true`. If it reports
 `--max-completion-tokens` value or lower `--reasoning-effort`, as identified by
 `remediation_code: increase_max_completion_tokens_or_lower_reasoning_effort`; otherwise surface the
 diagnostic instead of retrying. Never infer completion from the absence of stdout.
+
+## Setting the timeout from evidence
+
+The right `--timeout` per effort level is a latency question, and no arithmetic over token
+budgets answers it — the budget is a ceiling, not a spend, so a high-effort call may use a
+fraction of its allowance and finish quickly. The history file is there to replace that
+guess with a measurement:
+
+```bash
+python3 - <<'EOF'
+import json, pathlib, statistics
+path = pathlib.Path.home() / ".config/request-pov/history.jsonl"
+rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+for effort in sorted({row["reasoning_effort"] for row in rows}):
+    seen = sorted(
+        row["elapsed_seconds"]
+        for row in rows
+        if row["reasoning_effort"] == effort and row["elapsed_seconds"] is not None
+    )
+    timed_out = sum(
+        1 for row in rows
+        if row["reasoning_effort"] == effort
+        and row["diagnostic_code"] == "request_timeout_state_unknown"
+    )
+    if seen:
+        print(
+            f"{effort:8s} n={len(seen):3d} median={statistics.median(seen):6.1f}s "
+            f"max={seen[-1]:6.1f}s timeouts={timed_out}"
+        )
+EOF
+```
+
+Read the timed-out rows as censored observations, not as latency: a call cut off at 120
+seconds only tells you it needed *more* than 120. A level whose timeout count is above zero
+has a deadline set too low, whatever its median looks like. Set a new default from the
+high-percentile completed times with headroom, not from the median.
 
 ## Boundaries
 

@@ -89,6 +89,14 @@ OpenRouter and the selected model provider. The skill:
 - can require a zero-data-retention endpoint with `--zdr`;
 - never prints your API key.
 
+The skill also keeps a local record, at `~/.config/request-pov/history.jsonl`, of
+how long each attempted request took: effort level, configured budget and timeout,
+elapsed time, finish reason, token usage, and the diagnostic code, including for
+failures. This is what lets you set the timeout from measurement rather than
+guesswork. It never records your question, the response, or the paths of context
+files; the file is owner-only and never leaves your machine. Pass `--no-history`
+to turn it off.
+
 Those safeguards reduce accidental disclosure; they are not a substitute for
 reviewing what you send or for reading OpenRouter's and the model provider's
 current privacy terms. Do not send secrets, personal data, customer data, or

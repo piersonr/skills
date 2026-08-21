@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -70,6 +71,14 @@ MAX_COMPLETION_TOKENS_BY_EFFORT = {
     "max": 32000,
 }
 DEFAULT_PROGRESS_INTERVAL = 15.0
+# A local, metadata-only record of how long requests actually take. The completion
+# budget scales with reasoning effort and the timeout does not, and the right values
+# for the timeout are a latency question that no amount of arithmetic over token
+# budgets can answer -- a budget is a ceiling, not a spend. So observe instead.
+# Failures are the point: a history of only completed calls would show a comfortable
+# distribution and argue the defaults are fine, which is precisely the wrong reading.
+HISTORY_FILENAME = "history.jsonl"
+MAX_HISTORY_BYTES = 5 * 1024 * 1024
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 REASONING_BUDGET_REMEDIATION = "increase_max_completion_tokens_or_lower_reasoning_effort"
 MAX_SAFE_USAGE_INTEGER = (1 << 63) - 1
@@ -207,6 +216,11 @@ def user_config_env() -> Path:
     configured = Path(config_home).expanduser() if config_home else None
     base = configured if configured is not None and configured.is_absolute() else Path.home() / ".config"
     return base / "request-pov" / ".env"
+
+
+def history_path() -> Path:
+    """Return the local request-history path, beside the user configuration."""
+    return user_config_env().parent / HISTORY_FILENAME
 
 
 def resolve_env_files(explicit: Path | None, start: Path) -> list[Path]:
@@ -738,6 +752,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--zdr", action="store_true", help="Require a zero-data-retention endpoint")
     parser.add_argument(
+        "--no-history",
+        action="store_true",
+        help="Do not append a metadata-only latency record to the local history file",
+    )
+    parser.add_argument(
         "--allow-sensitive-context",
         action="store_true",
         help="Override likely-secret detection after explicit user approval",
@@ -786,6 +805,77 @@ def validate_model_lineage(lineage: str, model: str) -> None:
             False,
             {"requested_lineage": lineage, "requested_model": model},
         )
+
+
+def _history_entry(
+    args: argparse.Namespace,
+    model: str,
+    *,
+    status: str,
+    diagnostic_code: str,
+    retryable: bool,
+    exit_code: int,
+    elapsed_seconds: float | None,
+    prompt_bytes: int,
+    context_files: int,
+    metadata: dict[str, Any] | None = None,
+    usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assemble one metadata-only latency observation.
+
+    Never record the question, the response, or context file paths. This file exists
+    to tune timeouts; content in it would be a new disclosure surface in a helper whose
+    whole posture is about what leaves the machine. Sizes and counts answer the latency
+    question without carrying any of it.
+    """
+    metadata = metadata or {}
+    entry: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": status,
+        "exit_code": exit_code,
+        "diagnostic_code": diagnostic_code,
+        "retryable": retryable,
+        "requested_lineage": args.lineage,
+        "requested_model": model,
+        "resolved_model": metadata.get("resolved_model"),
+        "provider": metadata.get("provider"),
+        "reasoning_effort": args.reasoning_effort,
+        "max_completion_tokens": args.max_completion_tokens,
+        "timeout": args.timeout,
+        "elapsed_seconds": elapsed_seconds,
+        "finish_reason": metadata.get("finish_reason"),
+        "native_finish_reason": metadata.get("native_finish_reason"),
+        "prompt_bytes": prompt_bytes,
+        "context_files": context_files,
+    }
+    if usage:
+        entry["usage"] = usage
+    return entry
+
+
+def record_history(entry: dict[str, Any], *, enabled: bool) -> None:
+    """Append one observation as a single JSON line.
+
+    Never raises. A history write is bookkeeping, and bookkeeping must not be able to
+    fail a request that already succeeded -- or add a second failure mode to one that
+    did not. A single O_APPEND write of a short line is atomic across concurrent
+    callers on POSIX, so parallel requests cannot interleave into a corrupt line.
+    """
+    if not enabled:
+        return
+    try:
+        path = history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size >= MAX_HISTORY_BYTES:
+            path.replace(path.with_name(path.name + ".1"))
+        line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+        handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(handle, line.encode("utf-8"))
+        finally:
+            os.close(handle)
+    except Exception:  # noqa: BLE001 - bookkeeping must never break the request
+        pass
 
 
 def _print_result(result: dict[str, Any], json_mode: bool) -> None:
@@ -928,6 +1018,24 @@ def _run(args: argparse.Namespace) -> int:
             for key, value in response_metadata(response).items():
                 exc.metadata.setdefault(key, value)
             exc.metadata.setdefault("elapsed_seconds", round(elapsed, 3))
+        # Only observations of a real attempt belong in the history. A validation error
+        # raised before the POST has no elapsed time and is not a latency data point.
+        if exc.metadata.get("elapsed_seconds") is not None:
+            record_history(
+                _history_entry(
+                    args,
+                    model,
+                    status="error",
+                    diagnostic_code=exc.diagnostic_code,
+                    retryable=exc.retryable,
+                    exit_code=exc.exit_code,
+                    elapsed_seconds=exc.metadata.get("elapsed_seconds"),
+                    prompt_bytes=prompt_bytes,
+                    context_files=len(contexts),
+                    metadata=exc.metadata,
+                ),
+                enabled=not args.no_history,
+            )
         raise
     metadata = response_metadata(response)
     result = {
@@ -943,6 +1051,22 @@ def _run(args: argparse.Namespace) -> int:
         "diagnostic_code": "ok",
         "pov": content,
     }
+    record_history(
+        _history_entry(
+            args,
+            model,
+            status="success",
+            diagnostic_code="ok",
+            retryable=False,
+            exit_code=0,
+            elapsed_seconds=result["elapsed_seconds"],
+            prompt_bytes=prompt_bytes,
+            context_files=len(contexts),
+            metadata=metadata,
+            usage=result["usage"],
+        ),
+        enabled=not args.no_history,
+    )
     _print_result(result, args.json)
     return 0
 
