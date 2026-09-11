@@ -727,6 +727,42 @@ class RequestPovTests(PovFixture):
         self.assertEqual(request_pov.EXIT_VALIDATION, status)
         self.assertEqual("validation_error", json.loads(stdout)["diagnostic_code"])
 
+    def test_fable_class_preserves_tilde_and_precedes_environment_override(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"POV_ANTHROPIC_MODEL": "anthropic/claude-sonnet-5"},
+            clear=True,
+        ):
+            status, stdout, _ = self.invoke(
+                ["--model-class", "fable", "--caller-lineage", "openai",
+                 "--prompt", "review this", "--dry-run", "--json"]
+            )
+        result = json.loads(stdout)
+        self.assertEqual(0, status)
+        self.assertEqual("anthropic", result["requested_lineage"])
+        self.assertEqual("~anthropic/claude-fable-latest", result["requested_model"])
+
+    def test_fable_class_refuses_same_lineage_and_conflicting_lineage(self) -> None:
+        for extra, diagnostic in (
+            (["--caller-lineage", "anthropic"], "same_lineage_refused"),
+            (["--lineage", "xai"], "model_lineage_mismatch"),
+        ):
+            with self.subTest(extra=extra):
+                status, stdout, _ = self.invoke(
+                    ["--model-class", "fable", "--prompt", "review this",
+                     "--dry-run", "--json", *extra]
+                )
+                self.assertEqual(request_pov.EXIT_VALIDATION, status)
+                self.assertEqual(diagnostic, json.loads(stdout)["diagnostic_code"])
+
+    def test_explicit_tilde_anthropic_model_rejects_conflicting_lineage(self) -> None:
+        status, stdout, _ = self.invoke(
+            ["--lineage", "openai", "--model", "~anthropic/claude-fable-latest",
+             "--prompt", "review this", "--dry-run", "--json"]
+        )
+        self.assertEqual(request_pov.EXIT_VALIDATION, status)
+        self.assertEqual("model_lineage_mismatch", json.loads(stdout)["diagnostic_code"])
+
     def test_opus_model_class_resolves_to_opus_5(self) -> None:
         stdout = io.StringIO()
         with mock.patch.dict(os.environ, {}, clear=True), redirect_stdout(stdout):

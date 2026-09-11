@@ -36,6 +36,7 @@ DEFAULT_MODELS = {
 # and fuzzy lookup would just automate the slug-guessing this tool forbids. The
 # cost is that they go stale silently -- review them when a generation ships.
 MODEL_CLASSES = {
+    "fable": {"slug": "~anthropic/claude-fable-latest", "lineage": "anthropic"},
     "grok": {"slug": "x-ai/grok-4.6", "lineage": "xai"},
     "opus": {"slug": "anthropic/claude-opus-5", "lineage": "anthropic"},
     "sol": {"slug": "openai/gpt-5.6-sol", "lineage": "openai"},
@@ -49,6 +50,7 @@ MODEL_ENV_VARS = {
     "xai": "POV_XAI_MODEL",
 }
 MODEL_PREFIX_LINEAGES = {
+    "~anthropic": "anthropic",
     "anthropic": "anthropic",
     "openai": "openai",
     "x-ai": "xai",
