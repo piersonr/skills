@@ -744,7 +744,8 @@ class PRBackgroundTests(unittest.TestCase):
         state_file = os.path.join(self.state, os.listdir(self.state)[0])
         with open(state_file) as source:
             marker = json.load(source)["runs"][-1]["review_marker"]
-        review = {"body": marker, "commit_id": "b" * 40,
+        review = {"body": marker, "commit_id": "b" * 40, "state": "COMMENTED",
+                  "submitted_at": "2026-01-01T00:00:00Z",
                   "html_url": self.url + "#review-1", "user": {"login": "reviewer"}}
         self.set_reviews([review])
         self.assertEqual(self.run_pr("--status", "--json")["status"],
@@ -760,6 +761,27 @@ class PRBackgroundTests(unittest.TestCase):
         self.assertEqual(moved["status"], "stale_head")
         self.assertEqual(moved["verified_review"]["commit_id"], self.head)
         self.assertNotEqual(moved["live_head_sha"], moved["expected_head_sha"])
+
+    def test_only_a_submitted_review_counts_as_reviewed(self):
+        self.run_pr("--start", "--json", "--folder", self.env.dir)
+        state_file = os.path.join(self.state, os.listdir(self.state)[0])
+        with open(state_file) as source:
+            marker = json.load(source)["runs"][-1]["review_marker"]
+        base = {"body": marker, "commit_id": self.head, "html_url": self.url + "#review-1",
+                "user": {"login": "reviewer"}}
+        for state, submitted_at in (("PENDING", None), ("DISMISSED", "2026-01-01T00:00:00Z"),
+                                    ("COMMENTED", None)):
+            with self.subTest(state=state, submitted_at=submitted_at):
+                self.set_reviews([dict(base, state=state, submitted_at=submitted_at)])
+                status = self.run_pr("--status", "--json")
+                self.assertEqual(status["status"], "completed_unpublished")
+                self.assertIsNone(status["verified_review"])
+        self.set_reviews([dict(base, state="CHANGES_REQUESTED", submitted_at="2026-01-01T00:00:00Z")])
+        self.assertEqual(self.run_pr("--status", "--json")["status"], "reviewed")
+        # A draft must not let --start suppress a real retry either.
+        self.set_reviews([dict(base, state="PENDING", submitted_at=None)])
+        again = self.run_pr("--start", "--json", "--folder", self.env.dir)
+        self.assertFalse(again.get("duplicate_suppressed"))
 
 
 if __name__ == "__main__":

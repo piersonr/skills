@@ -506,13 +506,19 @@ def list_github_reviews(host, owner, repo, number):
     return reviews
 
 
+# Published review events the requested review may use. A PENDING draft is unsubmitted
+# and a DISMISSED review was withdrawn; neither is evidence that the review happened.
+VERIFIED_REVIEW_STATES = ("COMMENTED", "CHANGES_REQUESTED")
+
+
 def find_verified_review(run, reviews):
     if not isinstance(reviews, list):
         return None
     marker = run.get("review_marker") or ""
     expected_head = run.get("expected_head_sha")
     for review in reviews:
-        if marker in str(review.get("body") or "") and str(review.get("commit_id") or "") == expected_head:
+        if (marker in str(review.get("body") or "") and str(review.get("commit_id") or "") == expected_head
+                and review.get("state") in VERIFIED_REVIEW_STATES and review.get("submitted_at")):
             user = review.get("user") if isinstance(review.get("user"), dict) else {}
             return {
                 "id": review.get("id"),
