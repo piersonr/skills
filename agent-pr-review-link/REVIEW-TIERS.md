@@ -24,7 +24,7 @@ Escalate a tier for novel or uncertain behavior, and record why.
 | Tier | Independent review before the PR | Local cross-lineage preflight | After the PR |
 | --- | --- | --- | --- |
 | Routine | One independent reviewer of the committed diff | Not used | Required CI and advisory feedback; **no automatic cross-lineage review** |
-| Substantial | A stronger independent reviewer | Optional, for novel or uncertain behavior | Cross-lineage review only for a documented trigger, or a measurement sample chosen before any feedback is seen |
+| Substantial | A stronger independent reviewer | Optional, for novel or uncertain behavior | Exact-head cross-lineage review of every substantial PR; the author assesses its findings before merge |
 | High-stakes | Strong independent review; two independent lineages when the harness can launch both | Required when the other lineage's CLI is available | Advisory exact-head cross-lineage review; a human judges its evidence before merge |
 
 **The independent pre-PR review is mandatory at every tier.** The session that
@@ -88,11 +88,9 @@ A cross-lineage review is published by the reviewing agent, in its own session, 
 that attribution is the reviewer's. Never have the authoring session post another
 lineage's findings as a review.
 
-Request a post-PR cross-lineage review in exactly two cases: the tier table above
-calls for one (high-stakes, or substantial with a documented trigger or sample),
-or the user explicitly asks. The tier requirement is itself sufficient
-authorization to use the paths below. Routine PRs get none of them unless the
-user asks.
+Request a post-PR cross-lineage review for every substantial or high-stakes PR,
+and for a routine PR only when the user explicitly asks. The tier requirement is
+itself sufficient authorization to use the paths below.
 
 - **A repository's CI cross-lineage workflow**, where one exists. Prefer it for
   high-stakes work, because CI verifies the reviewer's provenance.
