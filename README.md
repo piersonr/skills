@@ -7,6 +7,7 @@ Portable agent skills for coding agents such as Codex and Claude Code.
 | Skill | What it does |
 | --- | --- |
 | [`request-pov`](request-pov/) | Gets an independent second opinion from a model in another AI lineage through OpenRouter. |
+| [`agent-pr-review-link`](agent-pr-review-link/) | Hands a pull request to the other AI lineage for review, verified against the exact head, under the global [review tiers](agent-pr-review-link/REVIEW-TIERS.md). |
 
 ## Install `request-pov`
 
@@ -123,6 +124,67 @@ python3 request-pov/scripts/request_pov.py \
 ```
 
 Both commands are local and make no paid API request.
+
+## Install `agent-pr-review-link`
+
+A command-line helper plus the review policy it serves. The policy,
+[REVIEW-TIERS.md](agent-pr-review-link/REVIEW-TIERS.md), is the global standard
+for when work gets an independent review, a local cross-lineage preflight, or a
+post-PR cross-lineage review.
+
+This repository is the **source of truth**. The copy on your `PATH` is an install
+artifact: never edit it. Change the source here, commit, and install again.
+
+Requirements: Git, Python 3.10 or newer, and the GitHub CLI (`gh`). The automatic
+Claude modes also need Claude Code; the Codex handoff needs the Codex desktop app.
+
+```bash
+git clone https://github.com/piersonr/skills.git
+cd skills
+python3 agent-pr-review-link/scripts/install.py install
+python3 agent-pr-review-link/scripts/install.py check
+```
+
+`install` copies (never symlinks) the helper to `~/.local/bin/agent-pr-review-link`,
+and puts its tests plus an `INSTALL.json` manifest in
+`~/.local/share/agent-pr-review-link/`. The manifest records the source commit,
+remote, file hashes, and whether the source was dirty. Use `--prefix` for another
+location, and make sure `<prefix>/bin` is on your `PATH`.
+
+The installer protects against three mistakes:
+
+- **Dirty source.** It refuses to install uncommitted changes. `--allow-dirty`
+  overrides that, and the manifest records it.
+- **Edited installed copy.** It refuses to overwrite an installed copy that no
+  longer matches its manifest, because an in-place edit would otherwise be lost.
+  Recover the change into this repository first, or pass `--force`.
+- **Unmanaged copy.** An existing copy with no manifest is adopted only when it is
+  byte-identical to the source.
+
+Running `install` again is a no-op when nothing changed.
+
+`check` exits `0` only when the installed copy matches both its manifest and this
+source. It reports `behind_source`, `edited_in_place`, `unmanaged_match`,
+`unmanaged_differs`, or `not_installed` otherwise.
+
+Every upgrade keeps the replaced version. To return to it, run:
+
+```bash
+python3 agent-pr-review-link/scripts/install.py rollback
+```
+
+To update an install, run `git pull` in the clone and then `install` again.
+
+## Verify `agent-pr-review-link`
+
+```bash
+python3 agent-pr-review-link/scripts/test_agent_pr_review_link.py
+python3 agent-pr-review-link/scripts/test_install.py
+```
+
+Both are local. `gh`, `open`, and the agent CLIs are stubbed, so no GitHub
+request is made and no app is opened. To test an installed copy instead, run
+`python3 ~/.local/share/agent-pr-review-link/test_agent_pr_review_link.py`.
 
 ## License
 

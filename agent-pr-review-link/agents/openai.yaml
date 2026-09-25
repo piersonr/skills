@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR Review Link"
+  short_description: "Tiered cross-lineage PR review handoff"
+  default_prompt: "Use $agent-pr-review-link to decide this PR's review tier and hand it to the other lineage if the tier calls for it."

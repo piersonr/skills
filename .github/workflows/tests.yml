@@ -34,3 +34,7 @@ jobs:
             --lineage anthropic \
             --prompt "Challenge this harmless test plan" \
             --dry-run
+      - name: agent-pr-review-link tests
+        run: |
+          python3 agent-pr-review-link/scripts/test_agent_pr_review_link.py
+          python3 agent-pr-review-link/scripts/test_install.py
