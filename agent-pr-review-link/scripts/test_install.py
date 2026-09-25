@@ -204,6 +204,55 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertTrue((home / ".local" / "bin" / "agent-pr-review-link").is_file())
 
+    def test_repairing_an_interrupted_install_keeps_the_real_previous_version(self):
+        self.run_installer("install")
+        v1_helper = self.bin.read_bytes()
+        self.commit_change("v2")
+        self.commit_change("v2 tests", name="test_agent_pr_review_link.py")
+        self.run_installer("install")  # previous/ = v1
+        self.commit_change("v3")
+        self.commit_change("v3 tests", name="test_agent_pr_review_link.py")
+        shutil.copy2(self.scripts / "agent-pr-review-link", self.bin)  # v3 helper landed, tests did not
+        self.assertEqual(self.run_installer("check")[1]["status"], "interrupted_install")
+        self.assertEqual(self.run_installer("install")[0], 0)
+        self.assertEqual(self.run_installer("check")[1]["status"], "current")
+        previous = self.share / "previous"
+        self.assertEqual((previous / "agent-pr-review-link").read_bytes(), v1_helper)
+        self.assertFalse(json.loads((previous / "INSTALL.json").read_text()).get("unmanaged"))
+
+    def test_rollback_to_a_recorded_unmanaged_copy_can_be_undone(self):
+        self.run_installer("install")
+        (self.share / "INSTALL.json").unlink()
+        self.bin.write_text("#!/bin/sh\n# mine\n")
+        self.run_installer("install", "--force")
+        self.assertEqual(self.run_installer("rollback")[0], 0)  # back to "# mine", recorded unmanaged
+        code, out, err = self.run_installer("rollback")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.bin.read_bytes(), (self.scripts / "agent-pr-review-link").read_bytes())
+
+    def test_failed_rollback_keeps_the_rollback_target(self):
+        self.run_installer("install")
+        v1 = self.bin.read_bytes()
+        self.commit_change("v2")
+        self.run_installer("install")
+        self.bin.unlink()
+        self.bin.mkdir()  # the restore cannot be written over a directory
+        (self.bin / "x").write_text("x")
+        self.assertEqual(self.run_installer("rollback", "--force")[0], 2)
+        self.assertEqual((self.share / "previous" / "agent-pr-review-link").read_bytes(), v1)
+
+    def test_rollback_does_not_launder_an_edited_installed_test(self):
+        self.run_installer("install")
+        self.commit_change("v2")
+        self.run_installer("install")
+        test = self.share / "test_agent_pr_review_link.py"
+        test.write_text(test.read_text() + "\n# edited in place\n")
+        self.assertEqual(self.run_installer("rollback")[0], 0)
+        kept = json.loads((self.share / "previous" / "INSTALL.json").read_text())
+        self.assertTrue(kept["unmanaged"])
+        self.run_installer("rollback")
+        self.assertNotEqual(self.run_installer("check")[1]["status"], "current")
+
     def test_rollback_without_previous_refused(self):
         self.run_installer("install")
         self.assertEqual(self.run_installer("rollback")[0], 2)

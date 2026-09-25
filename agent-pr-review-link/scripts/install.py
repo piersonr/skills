@@ -103,6 +103,10 @@ def installed_state(paths, source=None):
         return "edited_in_place", manifest
     if not recorded:
         if source is None:
+            # An unmanaged copy this tool already recorded (for example, restored by rollback)
+            # is known bytes; only an unrecorded one needs --force to displace.
+            if manifest and current == manifest.get("script_sha256"):
+                return "unmanaged_recorded", manifest
             return "unmanaged", manifest
         return ("unmanaged_match" if current == source["script_sha256"] else "unmanaged_differs"), manifest
     if sha(paths["test"]) != manifest.get("test_sha256"):
@@ -137,24 +141,37 @@ def snapshot_install(paths):
     helper = paths["bin"].read_bytes() if paths["bin"].is_file() else None
     if helper is None:
         return None
-    if not manifest or manifest.get("script_sha256") != hashlib.sha256(helper).hexdigest():
+    test = paths["test"].read_bytes() if paths["test"].is_file() else None
+    test_sha = hashlib.sha256(test).hexdigest() if test is not None else None
+    if (not manifest or manifest.get("script_sha256") != hashlib.sha256(helper).hexdigest()
+            or manifest.get("test_sha256") != test_sha):
         manifest = {"version": MANIFEST_VERSION, "unmanaged": True, "source_commit": None,
-                    "script_sha256": hashlib.sha256(helper).hexdigest(), "test_sha256": sha(paths["test"]),
+                    "script_sha256": hashlib.sha256(helper).hexdigest(), "test_sha256": test_sha,
                     "recorded_at": now()}
-    return {"helper": helper, "test": paths["test"].read_bytes() if paths["test"].is_file() else None,
-            "manifest": manifest}
+    return {"helper": helper, "test": test, "manifest": manifest}
 
 
-def store_previous(paths, saved):
-    """Replace previous/ with one complete set, never a mix of two installs."""
+def stage_previous(paths, saved):
+    """Write one complete set to a staging directory; commit_previous() swaps it in."""
+    paths["share"].mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=".previous.", dir=paths["share"]))
+    write_bytes(staged / NAME, saved["helper"], 0o755)
+    if saved["test"] is not None:
+        write_bytes(staged / TEST, saved["test"], 0o644)
+    write_json(staged / MANIFEST, saved["manifest"])
+    return staged
+
+
+def commit_previous(paths, staged):
+    """Replace previous/ with the staged set. Until this runs, the old previous/ is intact."""
     previous = paths["previous"]
     if previous.exists():
-        shutil.rmtree(previous)
-    previous.mkdir(parents=True)
-    write_bytes(previous / NAME, saved["helper"], 0o755)
-    if saved["test"] is not None:
-        write_bytes(previous / TEST, saved["test"], 0o644)
-    write_json(previous / MANIFEST, saved["manifest"])
+        retired = previous.with_name(".previous.retired.%d" % os.getpid())
+        os.replace(previous, retired)
+        os.replace(staged, previous)
+        shutil.rmtree(retired)
+    else:
+        os.replace(staged, previous)
 
 
 def cmd_install(args):
@@ -170,10 +187,12 @@ def cmd_install(args):
     if state == "current" and manifest.get("source_commit") == source["source_commit"]:
         print(json.dumps({"status": "up_to_date", "bin": str(paths["bin"]), **source}))
         return 0
-    saved = snapshot_install(paths)
+    saved = None if state == "interrupted_install" else snapshot_install(paths)
     if saved and (saved["helper"] != (SOURCE_DIR / NAME).read_bytes()
                   or saved["test"] != (SOURCE_DIR / TEST).read_bytes()):
-        store_previous(paths, saved)
+        # An interrupted install already stored the genuine prior set before it crashed,
+        # so repairing it must leave previous/ alone.
+        commit_previous(paths, stage_previous(paths, saved))
     # Helper, then tests, then the manifest last: a crash before the manifest is detected
     # next time as interrupted_install and repaired without --force.
     write_bytes(paths["bin"], (SOURCE_DIR / NAME).read_bytes(), 0o755)
@@ -213,10 +232,7 @@ def cmd_rollback(args):
                  "test": (previous / TEST).read_bytes() if (previous / TEST).is_file() else None,
                  "manifest": read_manifest(previous / MANIFEST)}
     displaced = snapshot_install(paths)
-    if displaced:
-        store_previous(paths, displaced)
-    else:
-        shutil.rmtree(previous)
+    staged = stage_previous(paths, displaced) if displaced else None
     write_bytes(paths["bin"], restoring["helper"], 0o755)
     if restoring["test"] is None:
         if paths["test"].exists():
@@ -226,6 +242,11 @@ def cmd_rollback(args):
     manifest = restoring["manifest"] or {"version": MANIFEST_VERSION, "unmanaged": True, "source_commit": None}
     manifest.update(script_sha256=sha(paths["bin"]), test_sha256=sha(paths["test"]), rolled_back_at=now())
     write_json(paths["manifest"], manifest)
+    # Only now retire the rollback target: a crash above leaves it intact in previous/.
+    if staged:
+        commit_previous(paths, staged)
+    else:
+        shutil.rmtree(previous)
     print(json.dumps({"status": "rolled_back", "bin": str(paths["bin"]), "script_sha256": manifest["script_sha256"],
                       "source_commit": manifest.get("source_commit"), "unmanaged": bool(manifest.get("unmanaged"))}))
     return 0
