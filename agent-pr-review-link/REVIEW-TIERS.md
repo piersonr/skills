@@ -43,9 +43,9 @@ A read-only review of an immutable snapshot of the committed diff, run before th
 PR opens. It records the base commit, head commit, full-diff SHA-256, reviewer
 identity, and a local report path.
 
-- Use the repository's helper where it has one. For example, dt-foundation ships
-  `scripts/claude-preflight.py` (for Codex-authored changes) and
-  `scripts/codex-review.py` (for Claude-authored changes).
+- Use the repository's preflight helper where it has one, one per reviewing
+  lineage: a Claude reviewer for Codex-authored changes, a Codex reviewer for
+  Claude-authored changes.
 - Where a repository has no helper and the tier requires one, record the gap in
   the PR and get human judgment on it before publication. `request-pov` in this
   collection is an outside opinion, not a snapshot preflight, and does not fill
@@ -86,19 +86,22 @@ provenance only from the CI bot, naming the expected head and a reviewed outcome
 
 A cross-lineage review is published by the reviewing agent, in its own session, so
 that attribution is the reviewer's. Never have the authoring session post another
-lineage's findings as a review. Publish only through a repository's documented
-trigger or on Rob's explicit request:
+lineage's findings as a review.
 
+Request a post-PR cross-lineage review in exactly two cases: the tier table above
+calls for one (high-stakes, or substantial with a documented trigger or sample),
+or the user explicitly asks. The tier requirement is itself sufficient
+authorization to use the paths below. Routine PRs get none of them unless the
+user asks.
+
+- **A repository's CI cross-lineage workflow**, where one exists. Prefer it for
+  high-stakes work, because CI verifies the reviewer's provenance.
 - **Codex-authored PR → Claude review:** `agent-pr-review-link claude --start <full-pr-url>`,
   verified with `agent-pr-review-link claude --status --json <full-pr-url>`.
   `--follow-up` requests an exact-head re-review after fixes.
 - **Claude-authored PR → Codex review:** `agent-pr-review-link codex --open <full-pr-url>`
   opens the Codex app with a read-only review request typed in. Nothing is sent
-  until Rob presses Enter.
-- **A repository's CI cross-lineage workflow**, where one exists, is the verified
-  path for the high-stakes advisory review.
-
-Routine PRs get none of these unless Rob asks.
+  until the user presses Enter, and a prefilled, unsent request is not a review.
 
 ## Failure recovery
 

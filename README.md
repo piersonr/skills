@@ -148,8 +148,9 @@ python3 agent-pr-review-link/scripts/install.py check
 `install` copies (never symlinks) the helper to `~/.local/bin/agent-pr-review-link`,
 and puts its tests plus an `INSTALL.json` manifest in
 `~/.local/share/agent-pr-review-link/`. The manifest records the source commit,
-remote, file hashes, and whether the source was dirty. Use `--prefix` for another
-location, and make sure `<prefix>/bin` is on your `PATH`.
+remote, file hashes, and whether the source was dirty. To install elsewhere, pass
+`--prefix` or set `AGENT_PR_REVIEW_LINK_PREFIX`, and make sure `<prefix>/bin` is on
+your `PATH`.
 
 The installer protects against three mistakes:
 
@@ -159,15 +160,21 @@ The installer protects against three mistakes:
   longer matches its manifest, because an in-place edit would otherwise be lost.
   Recover the change into this repository first, or pass `--force`.
 - **Unmanaged copy.** An existing copy with no manifest is adopted only when it is
-  byte-identical to the source.
+  byte-identical to the source; anything else needs `--force`.
 
 Running `install` again is a no-op when nothing changed.
 
 `check` exits `0` only when the installed copy matches both its manifest and this
-source. It reports `behind_source`, `edited_in_place`, `unmanaged_match`,
-`unmanaged_differs`, or `not_installed` otherwise.
+source. Otherwise it reports `behind_source`, `tests_differ` (the installed tests
+are missing or changed; `install` repairs them), `interrupted_install`,
+`edited_in_place`, `unmanaged_match`, `unmanaged_differs`, or `not_installed`.
 
-Every upgrade keeps the replaced version. To return to it, run:
+Whenever `install` replaces anything — the helper or its tests — it first moves the
+complete replaced set (helper, tests, and manifest) to
+`~/.local/share/agent-pr-review-link/previous/`. An unrecorded copy it replaces
+with `--force` is kept there too, marked unmanaged. An install interrupted before
+its manifest is written is recognized and repaired on the next run. `rollback`
+swaps `previous/` with the current install, so running it again undoes it:
 
 ```bash
 python3 agent-pr-review-link/scripts/install.py rollback
