@@ -634,7 +634,9 @@ class QATests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr.decode())
         calls = self.env.open_calls()
         self.assertEqual(len(calls), 1)
-        self.assertTrue(calls[0].startswith("-g codex://new?prompt="))
+        # The helper backgrounds the app with `open -g` on macOS; xdg-open takes the link alone.
+        prefix = "-g " if sys.platform == "darwin" else ""
+        self.assertTrue(calls[0].startswith(prefix + "codex://new?prompt="), calls[0])
 
     def test_background_start_status_and_follow_up(self):
         claude, log = self.stub_claude()
