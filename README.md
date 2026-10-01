@@ -8,6 +8,7 @@ Portable agent skills for coding agents such as Codex and Claude Code.
 | --- | --- |
 | [`request-pov`](request-pov/) | Gets an independent second opinion from a model in another AI lineage through OpenRouter. |
 | [`agent-pr-review-link`](agent-pr-review-link/) | Hands a pull request to the other AI lineage for review, verified against the exact head, under the global [review tiers](agent-pr-review-link/REVIEW-TIERS.md). |
+| [`website-change-qa`](website-change-qa/) | Checks client-requested website changes against the request, with matched before and after screenshots, privacy checks, and a blind review by the other agent through `agent-pr-review-link --qa`. |
 
 ## Install `request-pov`
 
@@ -136,7 +137,9 @@ This repository is the **source of truth**. The copy on your `PATH` is an instal
 artifact: never edit it. Change the source here, commit, and install again.
 
 Requirements: Git, Python 3.10 or newer, and the GitHub CLI (`gh`). The automatic
-Claude modes also need Claude Code; the Codex handoff needs the Codex desktop app.
+Claude modes also need Claude Code; the Codex desktop handoff needs the Codex desktop app,
+and the automatic Codex QA modes need a current, signed-in Codex CLI (`codex`). Those
+runs start without your Codex configuration, so they use the CLI's default model.
 
 ```bash
 git clone https://github.com/piersonr/skills.git
@@ -192,6 +195,14 @@ python3 agent-pr-review-link/scripts/test_install.py
 Both are local. `gh`, `open`, and the agent CLIs are stubbed, so no GitHub
 request is made and no app is opened. To test an installed copy instead, run
 `python3 ~/.local/share/agent-pr-review-link/test_agent_pr_review_link.py`.
+
+## Install `website-change-qa`
+
+Copy the `website-change-qa` directory into your agent's user-level skill directory
+(`~/.codex/skills/` for Codex, `~/.claude/skills/` for Claude Code). Its independent
+review step calls `agent-pr-review-link --qa`, so install that helper first. A
+review requested from Claude runs through the Codex CLI; one requested from Codex
+runs through Claude Code.
 
 ## License
 
