@@ -757,6 +757,19 @@ class RequestPovTests(PovFixture):
         self.assertEqual("openai", result["requested_lineage"])
         self.assertEqual("~openai/gpt-sol-latest", result["requested_model"])
 
+    def test_sol_class_refuses_same_lineage_and_conflicting_lineage(self) -> None:
+        for extra, diagnostic in (
+            (["--caller-lineage", "openai"], "same_lineage_refused"),
+            (["--lineage", "xai"], "model_lineage_mismatch"),
+        ):
+            with self.subTest(extra=extra):
+                status, stdout, _ = self.invoke(
+                    ["--model-class", "sol", "--prompt", "review this",
+                     "--dry-run", "--json", *extra]
+                )
+                self.assertEqual(request_pov.EXIT_VALIDATION, status)
+                self.assertEqual(diagnostic, json.loads(stdout)["diagnostic_code"])
+
     def test_fable_class_refuses_same_lineage_and_conflicting_lineage(self) -> None:
         for extra, diagnostic in (
             (["--caller-lineage", "anthropic"], "same_lineage_refused"),

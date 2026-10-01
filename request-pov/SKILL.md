@@ -22,7 +22,10 @@ Use the bundled `scripts/request_pov.py` helper to consult an external model thr
 
    `fable` resolves to `~anthropic/claude-fable-latest` in the Anthropic lineage and
    `sol` to `~openai/gpt-sol-latest` in the OpenAI lineage, so both track the newest
-   release; preserve the leading `~` in the model slug.
+   release; preserve the leading `~` in the model slug. A floating class can change
+   reviewer behaviour, price, and latency with no change here, so when a review must be
+   repeatable, pin it instead: `--lineage openai --model openai/gpt-6.1-sol`. The
+   `Resolved model` line in the output names the version that actually answered.
 
    Pass `--caller-lineage <your own lineage>` on every call. The helper refuses a target in the same lineage, which is the one thing that would silently turn a cross-lineage review into a self-review. Use `--allow-same-lineage` only when a same-family second opinion is what the user actually asked for, and never describe that result as cross-lineage.
 
