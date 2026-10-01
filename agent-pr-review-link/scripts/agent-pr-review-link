@@ -30,10 +30,12 @@ for it. The helper, not the reviewer, saves the final message as review.md (or
 reconciliation.md), and only after a clean exit with the packet's other files
 unchanged; any other outcome writes nothing and exits 4. Codex starts without
 the user's config and saved command rules, so without their MCP servers,
-plugins, and sandbox exemptions, and with web
+plugins, sandbox exemptions, and hooks, and with web
 search, apps, browser, and computer-use features turned off where the CLI
 lists them. It is told to judge the packet's evidence and not open the live
-pages. --follow-up starts a fresh run that reads review.md and implementer.md.
+pages. The sandbox stops writes and network use by shell commands; it does not
+stop the reviewer reading other files on the machine, so keeping to the packet
+rests on the prompt. --follow-up starts a fresh run that reads review.md and implementer.md.
 One run per packet at a time, and none if the CLI's feature list cannot be
 read. SIGTERM, SIGHUP, SIGQUIT, and Ctrl-C stop the reviewer with the helper; SIGKILL cannot, and --status then names the Codex
 process that may be left. A run can take several minutes; launch it in the
@@ -108,7 +110,16 @@ QA_CODEX_TIMEOUT_SECONDS = 900
 QA_LOCK_WAIT_SECONDS = 2
 QA_IGNORED_FILES = (".DS_Store",)
 QA_CODEX_DISABLED_FEATURES = ("apps", "plugins", "remote_plugin", "browser_use", "browser_use_external",
-                              "computer_use", "multi_agent", "image_generation", "memories")
+                              "computer_use", "multi_agent", "image_generation", "memories", "hooks")
+# What the reviewer's process may inherit: enough to find and run the CLI, reach its
+# service, and sign in. Tokens for other tools (GH_TOKEN and the like) stay behind.
+QA_CODEX_ENV_NAMES = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "TZ", "LANG", "LANGUAGE",
+                      "CODEX_HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy",
+                      "https_proxy", "all_proxy", "no_proxy", "NODE_EXTRA_CA_CERTS", "NO_COLOR",
+                      "SYSTEMROOT", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "PATHEXT", "COMSPEC", "TEMP", "TMP")
+QA_CODEX_ENV_PREFIXES = ("LC_", "OPENAI_", "SSL_CERT_", "XDG_")
+# Names Codex treats as instructions or project configuration when they sit in its working directory.
+QA_CODEX_RESERVED_NAMES = ("AGENTS.md", "AGENTS.override.md", ".codex", ".agents")
 QA_STOP_SIGNALS = tuple(getattr(signal, name) for name in ("SIGTERM", "SIGHUP", "SIGQUIT", "SIGINT")
                         if hasattr(signal, name))
 STATE_VERSION = 1
@@ -1050,12 +1061,10 @@ def codex_binary():
 
 
 def codex_launch_env():
-    """Launch Codex without the calling agent's variables; CODEX_HOME stays."""
-    env = command_env()
-    for key in list(env):
-        if key.startswith("CLAUDE") or key in ("CODEX_THREAD_ID", "CURSOR_AGENT", "AI_AGENT"):
-            env.pop(key, None)
-    return env
+    """The reviewer's environment: an allowlist, so neither the calling agent's
+    variables nor tokens for other tools reach it."""
+    return {key: value for key, value in command_env().items()
+            if key in QA_CODEX_ENV_NAMES or key.startswith(QA_CODEX_ENV_PREFIXES)}
 
 
 def codex_isolation_args():
@@ -1396,6 +1405,11 @@ def qa_codex_locked(action, packet, as_json, path, free):
     if linked:
         raise UsageError("the packet contains a symlinked directory (%s); "
                          "an automatic Codex review needs the files themselves" % ", ".join(linked))
+    reserved = sorted(name for name in os.listdir(packet)
+                      if name in QA_CODEX_RESERVED_NAMES or name.lower() in ("agents.md", "agents.override.md"))
+    if reserved:
+        raise UsageError("the packet holds %s, which Codex would read as instructions or configuration "
+                         "rather than as evidence; rename it before an automatic Codex review" % ", ".join(reserved))
     timeout = codex_timeout()
     if running or not free:
         raise OperationError("a Codex QA run for this packet is still in progress; "
