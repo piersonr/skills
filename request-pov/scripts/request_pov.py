@@ -39,7 +39,7 @@ MODEL_CLASSES = {
     "fable": {"slug": "~anthropic/claude-fable-latest", "lineage": "anthropic"},
     "grok": {"slug": "x-ai/grok-4.6", "lineage": "xai"},
     "opus": {"slug": "anthropic/claude-opus-5", "lineage": "anthropic"},
-    "sol": {"slug": "openai/gpt-5.6-sol", "lineage": "openai"},
+    "sol": {"slug": "~openai/gpt-sol-latest", "lineage": "openai"},
     "sonnet": {"slug": "anthropic/claude-sonnet-5", "lineage": "anthropic"},
     "terra": {"slug": "openai/gpt-5.6-terra", "lineage": "openai"},
 }
@@ -52,6 +52,7 @@ MODEL_ENV_VARS = {
 MODEL_PREFIX_LINEAGES = {
     "~anthropic": "anthropic",
     "anthropic": "anthropic",
+    "~openai": "openai",
     "openai": "openai",
     "x-ai": "xai",
 }

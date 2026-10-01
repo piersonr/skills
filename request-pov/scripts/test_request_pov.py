@@ -742,6 +742,21 @@ class RequestPovTests(PovFixture):
         self.assertEqual("anthropic", result["requested_lineage"])
         self.assertEqual("~anthropic/claude-fable-latest", result["requested_model"])
 
+    def test_sol_class_resolves_to_floating_latest_alias(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"POV_OPENAI_MODEL": "openai/gpt-5.6-terra"},
+            clear=True,
+        ):
+            status, stdout, _ = self.invoke(
+                ["--model-class", "sol", "--caller-lineage", "anthropic",
+                 "--prompt", "review this", "--dry-run", "--json"]
+            )
+        result = json.loads(stdout)
+        self.assertEqual(0, status)
+        self.assertEqual("openai", result["requested_lineage"])
+        self.assertEqual("~openai/gpt-sol-latest", result["requested_model"])
+
     def test_fable_class_refuses_same_lineage_and_conflicting_lineage(self) -> None:
         for extra, diagnostic in (
             (["--caller-lineage", "anthropic"], "same_lineage_refused"),
