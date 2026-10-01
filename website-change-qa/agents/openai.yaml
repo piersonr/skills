@@ -1,0 +1,4 @@
+interface:
+  display_name: "Website Change QA"
+  short_description: "Verify requested page changes with matched screenshots and review"
+  default_prompt: "Use $website-change-qa to check the requested website changes against the client's request."
