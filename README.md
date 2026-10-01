@@ -136,7 +136,9 @@ This repository is the **source of truth**. The copy on your `PATH` is an instal
 artifact: never edit it. Change the source here, commit, and install again.
 
 Requirements: Git, Python 3.10 or newer, and the GitHub CLI (`gh`). The automatic
-Claude modes also need Claude Code; the Codex handoff needs the Codex desktop app.
+Claude modes also need Claude Code; the Codex desktop handoff needs the Codex desktop app,
+and the automatic Codex QA modes need the Codex CLI (`codex`) signed in and recent
+enough for the model your Codex configuration names.
 
 ```bash
 git clone https://github.com/piersonr/skills.git

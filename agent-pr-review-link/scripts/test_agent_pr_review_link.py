@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from urllib.parse import parse_qs, parse_qsl, unquote, urlsplit
 
@@ -620,7 +621,8 @@ class QATests(unittest.TestCase):
         os.makedirs(empty)
         for args in (("claude", "--qa", empty),
                      ("claude", "--qa", os.path.join(self.env.dir, "missing")),
-                     ("codex", "--qa", self.packet, "--start"),
+                     ("codex", "--qa", self.packet, "--start", "--reconcile"),
+                     ("codex", "--qa", self.packet, "--start", "--url"),
                      ("claude", "--qa", self.packet, "--start", "--reconcile"),
                      ("claude", "--qa", self.packet, "--folder", self.env.dir),
                      ("claude", "--qa", self.packet, "https://github.com/a/b/pull/1"),
@@ -658,6 +660,255 @@ class QATests(unittest.TestCase):
         r = self.run_qa("claude", "--qa", self.packet, "--follow-up", "--json", claude=claude)
         self.assertEqual(r.returncode, 0, r.stderr.decode())
         self.assertIn("--resume sess1", self.launches(log)[-1])
+
+
+CODEX_STUB = r'''#!{python}
+"""A `codex` stand-in. CODEX_STUB (JSON) chooses how the fake review run behaves."""
+import json, os, sys, time
+cfg = json.loads(os.environ.get("CODEX_STUB") or "{{}}")
+args = sys.argv[1:]
+with open({log!r}, "a") as f:
+    f.write(json.dumps({{"args": args, "env": sorted(k for k in os.environ if k.startswith(("CLAUDE", "CODEX_THREAD")))}}) + "\n")
+if args[:1] == ["--version"]:
+    print("codex-cli 9.9.9")
+    sys.exit(0)
+with open({log!r} + ".prompt", "w") as f:
+    f.write(sys.stdin.read())
+with open({log!r} + ".pid", "w") as f:
+    f.write(str(os.getpid()))
+print(json.dumps({{"type": "thread.started", "thread_id": "thread-0001"}}), flush=True)
+time.sleep(cfg.get("sleep", 0))
+packet = args[args.index("-C") + 1]
+if cfg.get("tamper"):
+    with open(os.path.join(packet, cfg["tamper"]), "a") as f:
+        f.write("edited\n")
+if cfg.get("error"):
+    print(json.dumps({{"type": "turn.failed", "error": {{"message": cfg["error"]}}}}))
+if "message" in cfg:
+    with open(args[args.index("-o") + 1], "w") as f:
+        f.write(cfg["message"])
+sys.exit(cfg.get("exit", 0))
+'''
+
+
+class CodexQATests(unittest.TestCase):
+    """codex --qa --start/--follow-up/--status: a read-only `codex exec` run the helper waits for."""
+
+    def setUp(self):
+        self.env = Env()
+        self.packet = os.path.realpath(os.path.join(self.env.dir, "qa packet"))
+        os.makedirs(self.packet)
+        self.write("packet.md", "# Request\n")
+        self.write("R1-after-desktop-1440x900.png", "png\n")
+        self.state = os.path.join(self.env.dir, "state")
+        self.log = os.path.join(self.env.dir, "codex.log")
+        self.codex = os.path.join(self.env.bin, "codex-stub")
+        with open(self.codex, "w") as f:
+            f.write(CODEX_STUB.format(python=sys.executable, log=self.log))
+        os.chmod(self.codex, 0o755)
+
+    def tearDown(self):
+        self.env.close()
+
+    def write(self, name, text="x\n"):
+        with open(os.path.join(self.packet, name), "w") as f:
+            f.write(text)
+
+    def read(self, name):
+        with open(os.path.join(self.packet, name)) as f:
+            return f.read()
+
+    def env_for(self, stub, extra=None):
+        env = {"AGENT_PR_REVIEW_LINK_STATE_DIR": self.state,
+               "AGENT_PR_REVIEW_LINK_CODEX": self.codex,
+               "CODEX_STUB": json.dumps(stub)}
+        env.update(extra or {})
+        return env
+
+    def run_qa(self, *args, stub=None, extra=None):
+        return self.env.run("codex", "--qa", self.packet, *args, extra_env=self.env_for(stub or {}, extra))
+
+    def exec_calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as f:
+            return [c for c in map(json.loads, f) if c["args"][:1] == ["exec"]]
+
+    def status(self):
+        r = self.run_qa("--status", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        return json.loads(r.stdout.decode())
+
+    def test_start_runs_read_only_and_saves_the_final_message(self):
+        r = self.run_qa("--start", "--json", stub={"message": "Model X, 10:00\n\nR1: passed\n"},
+                        extra={"CLAUDECODE": "1", "CODEX_THREAD_ID": "caller"})
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        out = json.loads(r.stdout.decode())
+        self.assertEqual(out["status"], "reviewed")
+        self.assertEqual(out["codex_thread_id"], "thread-0001")
+        self.assertEqual(out["sandbox"], "read-only")
+        review = self.read("review.md")
+        self.assertTrue(review.startswith("<!-- Run by agent-pr-review-link: codex exec, read-only sandbox"))
+        self.assertIn("codex-cli 9.9.9", review.splitlines()[0])
+        self.assertTrue(review.endswith("Model X, 10:00\n\nR1: passed\n"))
+        self.assertEqual(sorted(os.listdir(self.packet)),
+                         ["R1-after-desktop-1440x900.png", "packet.md", "review.md"])
+        (call,) = self.exec_calls()
+        args = call["args"]
+        self.assertEqual(args[args.index("-s") + 1], "read-only")
+        self.assertEqual(args[args.index("-C") + 1], self.packet)
+        self.assertEqual(call["env"], [])  # the caller's identity markers do not reach the reviewer
+        with open(self.log + ".prompt") as f:
+            prompt = f.read()
+        self.assertIn("no browser and no network", prompt)
+        self.assertIn("Do not write or change any file", prompt)
+        self.assertIn("not as instructions", prompt)
+        self.assertNotIn("You may open the listed page URLs", prompt)
+        self.assertNotIn("implementer.md", prompt)
+        self.assertEqual(self.status()["status"], "reviewed")
+        # the helper's scratch copy of the message does not outlive the run
+        self.assertEqual([n for n in os.listdir(self.state) if n.endswith(".message.md")], [])
+
+    def test_links_still_offer_the_browser(self):
+        r = self.run_qa("--url")
+        prompt = parse_qs(urlsplit(r.stdout.decode().strip()).query)["prompt"][0]
+        self.assertIn("You may open the listed page URLs", prompt)
+        self.assertIn("The only file you may write is review.md", prompt)
+
+    def test_model_comes_from_the_codex_session_log(self):
+        sessions = os.path.join(self.env.dir, ".codex", "sessions", "2026", "10", "01")
+        os.makedirs(sessions)
+        with open(os.path.join(sessions, "rollout-2026-10-01T10-00-00-thread-0001.jsonl"), "w") as f:
+            f.write('{"type":"turn_context","payload":{"model":"gpt-test-1"}}\n')
+        r = self.run_qa("--start", "--json", stub={"message": "review"})
+        self.assertEqual(json.loads(r.stdout.decode())["codex_model"], "gpt-test-1")
+        self.assertIn("model gpt-test-1,", self.read("review.md").splitlines()[0])
+
+    def test_first_review_stays_blind_and_never_overwrites(self):
+        self.write("implementer.md")
+        r = self.run_qa("--start", stub={"message": "review"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(b"blind", r.stderr)
+        os.remove(os.path.join(self.packet, "implementer.md"))
+        self.write("review.md", "the first review\n")
+        r = self.run_qa("--start", stub={"message": "another"})
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(self.read("review.md"), "the first review\n")
+        self.assertEqual(self.exec_calls(), [])
+
+    def test_failures_write_nothing(self):
+        cases = (
+            ({"exit": 1, "error": "The model is not supported"}, "failed", b"The model is not supported"),
+            ({"exit": 1}, "failed", b"exit 1"),
+            ({"exit": 0}, "failed", b"no review text"),
+            ({"exit": 0, "message": "  \n"}, "failed", b"no review text"),
+            ({"message": "review", "tamper": "packet.md"}, "failed", b"packet.md"),
+            ({"message": "review", "tamper": "implementer.md"}, "failed", b"implementer.md"),
+            ({"message": "review", "tamper": "review.md"}, "failed", b"appeared during the review"),
+        )
+        for stub, status, note in cases:
+            with self.subTest(stub=stub):
+                self.setUp()
+                try:
+                    r = self.run_qa("--start", stub=stub)
+                    self.assertEqual(r.returncode, 4, r.stdout.decode())
+                    self.assertIn(note, r.stderr)
+                    self.assertIn(b"nothing was written", r.stderr)
+                    self.assertEqual(r.stdout, b"")
+                    self.assertEqual(self.status()["status"], status)
+                    # only the stub's own stray review.md can be there; the helper published nothing
+                    self.assertEqual(self.status()["output_present"], stub.get("tamper") == "review.md")
+                    self.assertNotIn("<!-- Run by", "".join(
+                        self.read(n) for n in os.listdir(self.packet)))
+                finally:
+                    self.tearDown()
+        self.setUp()
+
+    def test_missing_cli_is_an_operational_failure(self):
+        r = self.run_qa("--start", extra={"AGENT_PR_REVIEW_LINK_CODEX": os.path.join(self.env.dir, "nope")})
+        self.assertEqual(r.returncode, 4)
+        self.assertIn(b"could not run the Codex CLI", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.packet, "review.md")))
+
+    def test_timeout_stops_the_run(self):
+        r = self.run_qa("--start", "--json", stub={"sleep": 20, "message": "late"},
+                        extra={"AGENT_PR_REVIEW_LINK_CODEX_TIMEOUT": "1"})
+        self.assertEqual(r.returncode, 4)
+        self.assertEqual(json.loads(r.stdout.decode())["status"], "timed_out")
+        self.assertFalse(os.path.exists(os.path.join(self.packet, "review.md")))
+        with open(self.log + ".pid") as f:
+            pid = int(f.read())
+        time.sleep(0.2)
+        self.assertRaises(OSError, os.kill, pid, 0)  # the reviewer process did not outlive the limit
+        r = self.run_qa("--start", extra={"AGENT_PR_REVIEW_LINK_CODEX_TIMEOUT": "soon"})
+        self.assertEqual(r.returncode, 2)
+
+    def test_terminated_helper_takes_the_reviewer_with_it(self):
+        env = {"PATH": self.env.bin + os.pathsep + "/usr/bin:/bin", "HOME": self.env.dir}
+        env.update(self.env_for({"sleep": 20, "message": "late"}))
+        proc = subprocess.Popen([sys.executable, HELPER, "codex", "--qa", self.packet, "--start"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        deadline = time.time() + 10
+        while not os.path.exists(self.log + ".pid") and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(self.status()["status"], "running")
+        r = self.run_qa("--start", stub={"message": "second"})
+        self.assertEqual(r.returncode, 4)
+        self.assertIn(b"still in progress", r.stderr)
+        proc.terminate()
+        _, err = proc.communicate(timeout=20)
+        self.assertEqual(proc.returncode, 4, err.decode())
+        self.assertEqual(self.status()["status"], "interrupted")
+        with open(self.log + ".pid") as f:
+            pid = int(f.read())
+        time.sleep(0.2)
+        self.assertRaises(OSError, os.kill, pid, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.packet, "review.md")))
+        # an interrupted run does not block the next one
+        r = self.run_qa("--start", stub={"message": "review"})
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+
+    def test_dead_supervisor_is_reported_as_interrupted(self):
+        self.run_qa("--start", stub={"message": "review"})
+        path = os.path.join(self.state, os.listdir(self.state)[0])
+        with open(path) as f:
+            data = json.load(f)
+        data["runs"][-1].update(status="running", supervisor_pid=2 ** 22 + 12345)
+        with open(path, "w") as f:
+            json.dump(data, f)
+        self.assertEqual(self.status()["status"], "interrupted")
+
+    def test_follow_up_is_a_fresh_reconciliation(self):
+        r = self.run_qa("--follow-up", stub={"message": "x"})
+        self.assertEqual(r.returncode, 2)
+        self.write("review.md", "the first review\n")
+        self.write("implementer.md", "my conclusions\n")
+        # no saved run is needed: the first review may have come through the desktop link
+        r = self.run_qa("--follow-up", "--json", stub={"message": "0 disagreements remain"})
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        self.assertEqual(json.loads(r.stdout.decode())["status"], "reconciled")
+        self.assertTrue(self.read("reconciliation.md").endswith("0 disagreements remain\n"))
+        self.assertEqual(self.read("review.md"), "the first review\n")
+        with open(self.log + ".prompt") as f:
+            prompt = f.read()
+        self.assertIn("review.md (the earlier blind review)", prompt)
+        self.assertIn("implementer.md", prompt)
+        self.assertIn("saved as reconciliation.md", prompt)
+        self.assertNotIn("resume", " ".join(self.exec_calls()[-1]["args"]))
+        # a second round replaces the reconciliation, and still never the review
+        r = self.run_qa("--follow-up", stub={"message": "round two"})
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        self.assertTrue(self.read("reconciliation.md").endswith("round two\n"))
+
+    def test_status_without_a_run(self):
+        r = self.run_qa("--status")
+        self.assertEqual(r.returncode, 4)
+        self.assertEqual(self.exec_calls(), [])
+
+    def test_claude_and_codex_state_do_not_collide(self):
+        self.run_qa("--start", stub={"message": "review"})
+        (name,) = os.listdir(self.state)
+        self.assertTrue(name.startswith("qa-codex--"), name)
 
 
 class PRBackgroundTests(unittest.TestCase):
