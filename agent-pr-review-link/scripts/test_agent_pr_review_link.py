@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from urllib.parse import parse_qs, parse_qsl, unquote, urlsplit
@@ -676,12 +677,16 @@ if args[:1] == ["--version"]:
     print("codex-cli 9.9.9")
     sys.exit(0)
 if args[:2] == ["features", "list"]:
+    if "features" in cfg:
+        print(cfg["features"])
+        sys.exit(cfg.get("features_exit", 0))
     print("apps          stable  true\ncomputer_use  stable  true\nshell_tool    stable  true")
     sys.exit(0)
 with open({log!r} + ".prompt", "w") as f:
     f.write(sys.stdin.read())
-with open({log!r} + ".pid", "w") as f:
+with open({log!r} + ".pid.tmp", "w") as f:
     f.write(str(os.getpid()))
+os.replace({log!r} + ".pid.tmp", {log!r} + ".pid")  # readers never see it half-written
 print(json.dumps({{"type": "thread.started", "thread_id": "thread-0001"}}), flush=True)
 time.sleep(cfg.get("sleep", 0))
 packet = args[args.index("-C") + 1]
@@ -871,10 +876,35 @@ class CodexQATests(unittest.TestCase):
                 self.assertEqual(self.status()["output_present"], stub.get("tamper") == "review.md")
                 self.assertNotIn("<!-- Run by", "".join(self.read(n) for n in os.listdir(self.packet)))
 
+    def test_no_review_without_the_feature_list(self):
+        # An unreadable list would leave web, app, browser, and computer-use tools on.
+        for stub in ({"features": "", "features_exit": 1}, {"features": "apps: stable\ncomputer_use: stable"}):
+            r = self.run_qa("--start", stub=dict(stub, message="review"))
+            self.assertEqual(r.returncode, 4, stub)
+            self.assertIn(b"no review was started", r.stderr)
+            self.assertEqual(self.exec_calls(), [])
+            self.assertFalse(os.path.exists(os.path.join(self.packet, "review.md")))
+
+    def test_status_check_does_not_refuse_a_run(self):
+        import fcntl
+        os.makedirs(self.state)
+        self.run_qa("--start", stub={"message": "x", "features": "", "features_exit": 1})  # creates the lock file
+        (name,) = [n for n in os.listdir(self.state) if n.endswith(".lock")]
+        held = os.open(os.path.join(self.state, name), os.O_RDWR)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        timer = threading.Timer(0.8, os.close, [held])  # a status check finishing
+        timer.start()
+        try:
+            r = self.run_qa("--start", stub={"message": "review"})
+        finally:
+            timer.join()
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+
     def test_missing_cli_is_an_operational_failure(self):
         r = self.run_qa("--start", extra={"AGENT_PR_REVIEW_LINK_CODEX": os.path.join(self.env.dir, "nope")})
         self.assertEqual(r.returncode, 4)
-        self.assertIn(b"could not run the Codex CLI", r.stderr)
+        self.assertIn(b"is `codex` installed", r.stderr)
+        self.assertIn(b"no review was started", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.packet, "review.md")))
 
     def test_timeout_stops_the_run(self):
@@ -912,8 +942,12 @@ class CodexQATests(unittest.TestCase):
     def test_one_run_per_packet(self):
         # The second start arrives while the first is still probing the CLI, before it has
         # recorded anything: the lock, not the saved state, is what refuses it.
-        proc = self.start_in_background({"version_sleep": 2, "message": "the review"})
-        time.sleep(0.7)
+        # The first run outlasts the short wait a second start allows for a passing status check.
+        proc = self.start_in_background({"version_sleep": 1.5, "sleep": 2.5, "message": "the review"})
+        deadline = time.time() + 10
+        while not os.path.exists(self.log) and time.time() < deadline:
+            time.sleep(0.05)  # the first call to the CLI comes after the lock is taken
+        self.assertEqual(self.status()["status"], "starting")
         r = self.run_qa("--start", stub={"message": "a second review"})
         self.assertEqual(r.returncode, 4)
         self.assertIn(b"still in progress", r.stderr)

@@ -138,8 +138,8 @@ artifact: never edit it. Change the source here, commit, and install again.
 
 Requirements: Git, Python 3.10 or newer, and the GitHub CLI (`gh`). The automatic
 Claude modes also need Claude Code; the Codex desktop handoff needs the Codex desktop app,
-and the automatic Codex QA modes need the Codex CLI (`codex`) signed in and recent
-enough for the model your Codex configuration names.
+and the automatic Codex QA modes need a current, signed-in Codex CLI (`codex`). Those
+runs start without your Codex configuration, so they use the CLI's default model.
 
 ```bash
 git clone https://github.com/piersonr/skills.git
