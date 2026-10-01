@@ -794,6 +794,8 @@ class CodexQATests(unittest.TestCase):
         self.assertEqual(args[args.index("-C") + 1], self.packet)
         # the user's config, and so their MCP servers and plugins, is left out
         self.assertIn("--ignore-user-config", args)
+        # nor their saved allow rules, which would run a matching command outside the sandbox
+        self.assertIn("--ignore-rules", args)
         self.assertEqual(args[args.index("-c") + 1], 'web_search="disabled"')
         # only the features this CLI lists are turned off; an unknown name would be an error
         disabled = [args[i + 1] for i, a in enumerate(args) if a == "--disable"]

@@ -29,7 +29,8 @@ The automatic Codex QA modes run `codex exec` in a read-only sandbox and wait
 for it. The helper, not the reviewer, saves the final message as review.md (or
 reconciliation.md), and only after a clean exit with the packet's other files
 unchanged; any other outcome writes nothing and exits 4. Codex starts without
-the user's config, so without their MCP servers and plugins, and with web
+the user's config and saved command rules, so without their MCP servers,
+plugins, and sandbox exemptions, and with web
 search, apps, browser, and computer-use features turned off where the CLI
 lists them. It is told to judge the packet's evidence and not open the live
 pages. --follow-up starts a fresh run that reads review.md and implementer.md.
@@ -1058,11 +1059,12 @@ def codex_launch_env():
 
 
 def codex_isolation_args():
-    """Flags that start the reviewer without the user's config, connectors, or web tools.
+    """Flags that start the reviewer without the user's config, rules, connectors, or web tools.
 
-    The read-only sandbox covers only the shell commands the model runs. The
-    user's MCP servers and plugins, web search, and the browser and
-    computer-use tools are separate, and a packet holds text nobody has vetted.
+    The read-only sandbox covers only the shell commands the model runs, and
+    not the ones a saved allow rule exempts from it. The user's MCP servers and
+    plugins, web search, and the browser and computer-use tools are separate
+    again, and a packet holds text nobody has vetted.
     Feature names vary by CLI version and an unknown one is an error, so only
     the ones this CLI lists are turned off. A list that cannot be read, or that
     names none of them, stops the run: it must not go ahead with those tools on."""
@@ -1073,7 +1075,10 @@ def codex_isolation_args():
         raise OperationError("could not read the Codex CLI's feature list (is `codex` installed and "
                              "current?), so its web, app, browser, and "
                              "computer-use tools cannot be turned off; no review was started")
-    args = ["--ignore-user-config", "-c", 'web_search="disabled"']
+    # --ignore-user-config leaves the user's rules directory loading. A saved allow rule
+    # (for ssh, curl, gh, ...) runs its command outside the sandbox without asking, so
+    # the rules are left out as well.
+    args = ["--ignore-user-config", "--ignore-rules", "-c", 'web_search="disabled"']
     for name in disabled:
         args += ["--disable", name]
     return args, disabled

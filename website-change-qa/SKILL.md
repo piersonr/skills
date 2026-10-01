@@ -38,7 +38,7 @@ If authenticated browser access is unavailable, stop short of a visual verdict a
 
 ## Independent review
 
-Hand the review to the **other agent** with `agent-pr-review-link --qa`: from Codex, review with Claude; from Claude, review with Codex. The reviewer runs locally and reads the screenshots from disk, so nothing goes to a third-party provider. A Claude reviewer can also open the pages itself. A Codex reviewer started from Claude runs headless, with its web, browser, and connector tools turned off (the helper refuses to start the review if it cannot turn them off): it judges the packet's evidence only, so every live-page check in Capture and inspect evidence stays yours.
+Hand the review to the **other agent** with `agent-pr-review-link --qa`: from Codex, review with Claude; from Claude, review with Codex. The reviewer runs locally and reads the screenshots from disk, so nothing goes to a third-party provider. A Claude reviewer can also open the pages itself. A Codex reviewer started from Claude runs headless, without your Codex config or saved command rules, and with the web, browser, and connector tools its CLI lists turned off (the helper refuses to start the review if it cannot read that list): it judges the packet's evidence only, so every live-page check in Capture and inspect evidence stays yours.
 
 ### Build the packet
 
