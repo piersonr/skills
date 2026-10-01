@@ -8,6 +8,7 @@ Portable agent skills for coding agents such as Codex and Claude Code.
 | --- | --- |
 | [`request-pov`](request-pov/) | Gets an independent second opinion from a model in another AI lineage through OpenRouter. |
 | [`agent-pr-review-link`](agent-pr-review-link/) | Hands a pull request to the other AI lineage for review, verified against the exact head, under the global [review tiers](agent-pr-review-link/REVIEW-TIERS.md). |
+| [`website-change-qa`](website-change-qa/) | Checks client-requested website changes against the request, with matched before and after screenshots, privacy checks, and a blind review by the other agent through `agent-pr-review-link --qa`. |
 
 ## Install `request-pov`
 
