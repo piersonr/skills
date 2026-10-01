@@ -196,6 +196,14 @@ Both are local. `gh`, `open`, and the agent CLIs are stubbed, so no GitHub
 request is made and no app is opened. To test an installed copy instead, run
 `python3 ~/.local/share/agent-pr-review-link/test_agent_pr_review_link.py`.
 
+## Install `website-change-qa`
+
+Copy the `website-change-qa` directory into your agent's user-level skill directory
+(`~/.codex/skills/` for Codex, `~/.claude/skills/` for Claude Code). Its independent
+review step calls `agent-pr-review-link --qa`, so install that helper first. A
+review requested from Claude runs through the Codex CLI; one requested from Codex
+runs through Claude Code.
+
 ## License
 
 [MIT](LICENSE)

@@ -26,13 +26,17 @@ or --follow-up (automatic) then asks for reconciliation.md against
 implementer.md.
 
 The automatic Codex QA modes run `codex exec` in a read-only sandbox and wait
-for it. The reviewer cannot write to the packet: the helper saves its final
-message as review.md (or reconciliation.md) only after a clean exit with the
-packet's other files unchanged. That run has no browser and no network, so it
-judges the packet's evidence and not the live pages. --follow-up starts a
-fresh run that reads review.md and implementer.md. A run can take several
-minutes; launch it in the background where the calling harness limits a
-foreground command.
+for it. The helper, not the reviewer, saves the final message as review.md (or
+reconciliation.md), and only after a clean exit with the packet's other files
+unchanged; any other outcome writes nothing and exits 4. Codex starts without
+the user's config, so without their MCP servers and plugins, and with web
+search, apps, browser, and computer-use features turned off where the CLI
+lists them. It is told to judge the packet's evidence and not open the live
+pages. --follow-up starts a fresh run that reads review.md and implementer.md.
+One run per packet at a time. SIGTERM, SIGHUP, SIGQUIT, and Ctrl-C stop the
+reviewer with the helper; SIGKILL cannot, and --status then names the Codex
+process that may be left. A run can take several minutes; launch it in the
+background where the calling harness limits a foreground command.
 
 Options:
     --open         open the desktop deep link with the prompt prefilled; it is
@@ -81,6 +85,11 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+
 
 TARGETS = ("codex", "claude")
 CODEX_NATIVE = "codex://new"
@@ -96,6 +105,10 @@ QA_IMPLEMENTER = "implementer.md"
 QA_RECONCILIATION = "reconciliation.md"
 QA_CODEX_TIMEOUT_SECONDS = 900
 QA_IGNORED_FILES = (".DS_Store",)
+QA_CODEX_DISABLED_FEATURES = ("apps", "plugins", "remote_plugin", "browser_use", "browser_use_external",
+                              "computer_use", "multi_agent", "image_generation", "memories")
+QA_STOP_SIGNALS = tuple(getattr(signal, name) for name in ("SIGTERM", "SIGHUP", "SIGQUIT")
+                        if hasattr(signal, name))
 STATE_VERSION = 1
 
 # GitHub's own name rules: owners are alphanumeric plus single hyphens (max
@@ -792,7 +805,7 @@ def build_qa_prompt(target, packet, reconcile=False, headless=False):
         "- Read %s and every file it lists; open and look at each screenshot and reference image rather than relying on its caption." % QA_PACKET,
     ]
     if headless:
-        lines.append("- This run has no browser and no network access. Judge from the evidence in the packet, and mark anything that depends on the live page as could not verify.")
+        lines.append("- Work only from the files in the packet. Do not use web, browser, computer-use, connector, MCP, image-generation, or sub-agent tools, and do not open the listed page URLs. Mark anything that depends on the live page as could not verify.")
     else:
         lines.append("- You may open the listed page URLs in a browser to confirm the current rendered state at the listed viewports. Stay read-only: no form submissions, logins, admin or content edits, publishing, cache purges, deploys, or commits.")
     lines += [
@@ -1035,11 +1048,29 @@ def codex_binary():
 
 
 def codex_launch_env():
-    """Launch Codex without the calling agent's identity markers; CODEX_HOME stays."""
+    """Launch Codex without the calling agent's variables; CODEX_HOME stays."""
     env = command_env()
-    for key in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_AGENT", "AI_AGENT", "CODEX_THREAD_ID"):
-        env.pop(key, None)
+    for key in list(env):
+        if key.startswith("CLAUDE") or key in ("CODEX_THREAD_ID", "CURSOR_AGENT", "AI_AGENT"):
+            env.pop(key, None)
     return env
+
+
+def codex_isolation_args():
+    """Flags that start the reviewer without the user's config, connectors, or web tools.
+
+    The read-only sandbox covers only the shell commands the model runs. The
+    user's MCP servers and plugins, web search, and the browser and
+    computer-use tools are separate, and a packet holds text nobody has vetted.
+    Feature names vary by CLI version and an unknown one is an error, so only
+    the ones this CLI lists are turned off."""
+    listed = run_quiet([codex_binary(), "features", "list"], env=codex_launch_env()) or ""
+    known = {line.split()[0] for line in listed.splitlines() if line.split()}
+    disabled = [name for name in QA_CODEX_DISABLED_FEATURES if name in known]
+    args = ["--ignore-user-config", "-c", 'web_search="disabled"']
+    for name in disabled:
+        args += ["--disable", name]
+    return args, disabled
 
 
 def codex_timeout():
@@ -1058,6 +1089,14 @@ def codex_timeout():
 def one_line(text, limit=300):
     text = " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def qa_symlinked_dirs(packet):
+    found = []
+    for root, dirs, _files in os.walk(packet):
+        found += [os.path.relpath(os.path.join(root, name), packet)
+                  for name in dirs if os.path.islink(os.path.join(root, name))]
+    return sorted(found)
 
 
 def qa_fingerprint(packet, exclude=()):
@@ -1084,14 +1123,38 @@ def qa_fingerprint(packet, exclude=()):
 
 def pid_alive(pid):
     try:
-        os.kill(int(pid), 0)
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
     except (OSError, TypeError, ValueError):
         return False
     return True
 
 
+def qa_try_lock(state_file):
+    """Take the packet's run lock. Returns (handle, free); FREE is False while another run holds it.
+
+    The kernel drops the lock when its holder dies, however it dies, so a
+    stale record can never block a packet. Without fcntl there is no lock and
+    the saved supervisor pid is the only guard."""
+    if fcntl is None:
+        return None, True
+    os.makedirs(os.path.dirname(state_file), mode=0o700, exist_ok=True)
+    try:
+        handle = os.open(state_file + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise OperationError("could not open the QA run lock (%s)" % exc.__class__.__name__)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(handle)
+        return None, False
+    return handle, True
+
+
 def stop_process(proc):
-    """Stop a child started in its own session, along with anything it spawned."""
+    """Stop a child started in its own session, with what it spawned. Returns its output so far."""
     try:
         if hasattr(os, "killpg"):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -1100,48 +1163,46 @@ def stop_process(proc):
     except OSError:
         pass
     try:
-        proc.communicate(timeout=CMD_TIMEOUT_SECONDS)
+        return proc.communicate(timeout=CMD_TIMEOUT_SECONDS)
     except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+        return b"", b""
 
 
-def run_codex_exec(prompt, packet, message_path):
-    """Run one read-only `codex exec` to completion. Returns (outcome, events)."""
-    argv = [codex_binary(), "exec", "-C", packet, "-s", "read-only", "--skip-git-repo-check",
-            "--json", "-o", message_path, "-"]
-
-    def on_term(signum, frame):
-        raise Interrupted()
-
-    previous = signal.signal(signal.SIGTERM, on_term)
+def run_codex_exec(prompt, packet, message_path, isolation, timeout, on_started):
+    """Run one read-only `codex exec` to completion. Returns (outcome, events, stderr tail)."""
+    argv = ([codex_binary(), "exec", "-C", packet, "-s", "read-only", "--skip-git-repo-check"]
+            + isolation + ["--json", "-o", message_path, "-"])
     proc = None
     try:
         proc = subprocess.Popen(argv, cwd=packet, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, env=codex_launch_env(),
+                                stderr=subprocess.PIPE, env=codex_launch_env(),
                                 start_new_session=True)
-        stdout, _ = proc.communicate(prompt.encode("utf-8"), timeout=codex_timeout())
+        on_started(proc.pid)
+        stdout, stderr = proc.communicate(prompt.encode("utf-8"), timeout=timeout)
+        outcome = "ok" if proc.returncode == 0 else "exit %d" % proc.returncode
     except OSError as exc:
         if proc is not None:
             stop_process(proc)
-        return "could not run the Codex CLI (%s)" % exc.__class__.__name__, []
+        return "could not run the Codex CLI (%s)" % exc.__class__.__name__, [], ""
     except subprocess.TimeoutExpired:
-        stop_process(proc)
-        return "timed_out", []
-    except (Interrupted, KeyboardInterrupt):
+        stdout, stderr = stop_process(proc)
+        outcome = "timed_out"
+    except BaseException:
+        # A stop signal, or a failed state write: either way the reviewer must not outlive us.
         if proc is not None:
             stop_process(proc)
-        return "interrupted", []
-    finally:
-        signal.signal(signal.SIGTERM, previous)
+        raise
     events = []
-    for line in stdout.decode("utf-8", "replace").splitlines():
+    for line in (stdout or b"").decode("utf-8", "replace").splitlines():
         try:
             event = json.loads(line)
         except ValueError:
             continue
         if isinstance(event, dict):
             events.append(event)
-    return ("ok" if proc.returncode == 0 else "exit %d" % proc.returncode), events
+    tail = [line for line in (stderr or b"").decode("utf-8", "replace").splitlines()
+            if line.strip() and "additional input from stdin" not in line]
+    return outcome, events, one_line(tail[-1]) if tail else ""
 
 
 def codex_thread_id(events):
@@ -1189,7 +1250,14 @@ def qa_publish(packet, name, text, exclusive):
             handle.flush()
             os.fsync(handle.fileno())
         if exclusive:
-            os.link(temp, final)
+            try:
+                os.link(temp, final)
+            except FileExistsError:
+                raise
+            except OSError:
+                # No hard links here (exFAT, some network shares): create it exclusively instead.
+                with open(final, "x", encoding="utf-8") as handle:
+                    handle.write(text)
             os.unlink(temp)
         else:
             os.replace(temp, final)
@@ -1199,6 +1267,17 @@ def qa_publish(packet, name, text, exclusive):
         except OSError:
             pass
         raise OperationError("could not write %s (%s)" % (name, exc.__class__.__name__))
+
+
+def qa_codex_state(path):
+    data = read_state(path)
+    if data is None:
+        return None
+    runs = data.get("runs")
+    if (not isinstance(data.get("packet"), str) or not isinstance(runs, list)
+            or not all(isinstance(run, dict) for run in runs)):
+        raise OperationError("saved Codex QA state has an unsupported format")
+    return data
 
 
 def qa_codex_summary(data, run, path):
@@ -1211,6 +1290,7 @@ def qa_codex_summary(data, run, path):
         "run_id": run.get("run_id"),
         "reviewer": "codex exec",
         "sandbox": run.get("sandbox"),
+        "disabled_features": run.get("disabled_features"),
         "codex_thread_id": run.get("codex_thread_id"),
         "codex_model": run.get("codex_model"),
         "codex_version": run.get("codex_version"),
@@ -1226,10 +1306,10 @@ def render_qa_codex(summary):
         summary["packet"], summary["status"])]
     if summary["status"] in ("reviewed", "reconciled"):
         lines.append("Written: %s" % summary.get("output_file"))
-    else:
+    elif summary["status"] != "running":
         lines.append("Nothing was written to the packet.")
     if summary.get("failure_note"):
-        lines.append("Codex reported: %s" % summary["failure_note"])
+        lines.append("Note: %s" % summary["failure_note"])
     lines.append("Reviewer: codex exec, %s sandbox, model %s, thread %s" % (
         summary.get("sandbox"), summary.get("codex_model") or "not recorded",
         summary.get("codex_thread_id") or "not recorded"))
@@ -1244,14 +1324,27 @@ def render_qa_codex(summary):
 
 def qa_codex_automatic(action, packet, as_json):
     path = qa_state_path(packet, "codex")
-    data = read_state(path)
-    runs = data.get("runs") if data and isinstance(data.get("runs"), list) else []
-    last = runs[-1] if runs else None
-    # A run left "running" by a supervisor that no longer exists was cut off.
-    if last and last.get("status") == "running" and not pid_alive(last.get("supervisor_pid")):
+    lock, free = qa_try_lock(path)
+    try:
+        return qa_codex_locked(action, packet, as_json, path, free)
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+def qa_codex_locked(action, packet, as_json, path, free):
+    data = qa_codex_state(path)
+    last = data["runs"][-1] if data and data["runs"] else None
+    running = bool(last) and last.get("status") == "running"
+    if running and (free if fcntl is not None else not pid_alive(last.get("supervisor_pid"))):
+        # Nothing holds the run lock, so the supervisor that owned this run is gone.
         last["status"] = "interrupted"
+        last["failure_note"] = "the helper stopped before the run finished"
+        if pid_alive(last.get("codex_pid")):
+            last["failure_note"] += "; its Codex process (pid %s) may still be running" % last["codex_pid"]
         data["updated_at"] = utc_now()
         write_state(path, data)
+        running = False
     if action == "status":
         if last is None:
             raise OperationError("no saved Codex QA review exists for this packet")
@@ -1259,22 +1352,30 @@ def qa_codex_automatic(action, packet, as_json):
         emit(summary, render_qa_codex(summary), as_json)
         return 0
     reconcile = action == "follow-up"
-    qa_check_phase(packet, reconcile)
-    timeout = codex_timeout()
-    if last and last.get("status") == "running":
-        raise OperationError("a Codex QA run for this packet is still in progress (pid %s); "
-                             "wait for it, or check --status" % last.get("supervisor_pid"))
     output = QA_RECONCILIATION if reconcile else QA_REVIEW
+    qa_check_phase(packet, reconcile)
+    if not reconcile and os.path.lexists(os.path.join(packet, output)):
+        raise UsageError("%s already exists; use reconciliation or a new packet" % output)
+    linked = qa_symlinked_dirs(packet)
+    if linked:
+        raise UsageError("the packet contains a symlinked directory (%s); "
+                         "an automatic Codex review needs the files themselves" % ", ".join(linked))
+    timeout = codex_timeout()
+    if running or not free:
+        raise OperationError("a Codex QA run for this packet is still in progress; "
+                             "wait for it, or check --status")
     if data is None:
         now = utc_now()
         data = {"version": STATE_VERSION, "kind": "qa", "target": "codex", "packet": packet,
                 "created_at": now, "updated_at": now, "active_run_id": None, "runs": []}
+    isolation, disabled = codex_isolation_args()
     run = {
         "run_id": str(uuid.uuid4()),
         "mode": action,
         "requested_at": utc_now(),
         "output_file": os.path.join(packet, output),
         "sandbox": "read-only",
+        "disabled_features": disabled,
         "timeout_seconds": timeout,
         "supervisor_pid": os.getpid(),
         "codex_version": run_quiet([codex_binary(), "--version"], env=codex_launch_env()),
@@ -1282,14 +1383,28 @@ def qa_codex_automatic(action, packet, as_json):
     }
     data["runs"].append(run)
     data["active_run_id"] = run["run_id"]
-    write_state(path, data)
-
-    before = qa_fingerprint(packet, exclude=(output,))
     message_path = os.path.join(state_dir(), "qa-codex-%s.message.md" % run["run_id"])
-    started = time.time()
     prompt = build_qa_prompt("codex", packet, reconcile=reconcile, headless=True)
+    stop = {"defer": False}
+
+    def on_stop(signum, frame):
+        # Once the review is being saved, finish saving it rather than half-write it.
+        if not stop["defer"]:
+            raise Interrupted()
+
+    def on_started(pid):
+        run["codex_pid"] = pid
+        write_state(path, data)
+
+    started = time.time()
+    previous = {sig: signal.signal(sig, on_stop) for sig in QA_STOP_SIGNALS}
     try:
-        outcome, events = run_codex_exec(prompt, packet, message_path)
+        write_state(path, data)
+        before = qa_fingerprint(packet, exclude=(output,))
+        outcome, events, stderr_tail = run_codex_exec(prompt, packet, message_path, isolation,
+                                                      timeout, on_started)
+        run["codex_thread_id"] = codex_thread_id(events)
+        run["codex_model"] = codex_session_model(run["codex_thread_id"])
         text = ""
         if outcome == "ok":
             try:
@@ -1297,48 +1412,51 @@ def qa_codex_automatic(action, packet, as_json):
                     text = handle.read().strip()
             except OSError:
                 text = ""
-    finally:
-        try:
-            os.unlink(message_path)
-        except OSError:
-            pass
-    run["elapsed_seconds"] = int(round(time.time() - started))
-    run["finished_at"] = utc_now()
-    run["codex_thread_id"] = codex_thread_id(events)
-    run["codex_model"] = codex_session_model(run["codex_thread_id"])
-
-    if outcome in ("timed_out", "interrupted"):
-        run["status"] = outcome
-        run["failure_note"] = ("stopped at the %d-second limit" % timeout
-                               if outcome == "timed_out" else "the helper was interrupted")
-    elif outcome != "ok":
-        run["status"] = "failed"
-        run["failure_note"] = codex_failure_note(events) or outcome
-    elif not text:
-        run["status"] = "failed"
-        run["failure_note"] = "Codex exited cleanly but returned no review text"
-    else:
         after = qa_fingerprint(packet, exclude=(output,))
         changed = sorted(name for name in set(before) | set(after)
                          if before.get(name, "absent") != after.get(name, "absent"))
-        if changed:
-            run["status"] = "failed"
+        run["status"] = "failed"
+        if outcome == "timed_out":
+            run["status"] = "timed_out"
+            run["failure_note"] = "stopped at the %d-second limit" % timeout
+        elif outcome != "ok":
+            detail = codex_failure_note(events) or stderr_tail
+            run["failure_note"] = "%s: %s" % (outcome, detail) if detail else outcome
+        elif not text:
+            run["failure_note"] = "Codex exited cleanly but returned no review text"
+        elif changed:
             run["failure_note"] = one_line("packet files changed during the review: %s" % ", ".join(changed))
-        elif not reconcile and os.path.exists(os.path.join(packet, QA_REVIEW)):
-            run["status"] = "failed"
+        elif not reconcile and os.path.lexists(os.path.join(packet, QA_REVIEW)):
             run["failure_note"] = "%s appeared during the review" % QA_REVIEW
         else:
+            stop["defer"] = True
+            finished = utc_now()
             header = "<!-- Run by agent-pr-review-link: codex exec, read-only sandbox, model %s, %s, thread %s, finished %s -->" % (
                 run["codex_model"] or "not recorded", run["codex_version"] or "codex-cli version not recorded",
-                run["codex_thread_id"] or "not recorded", run["finished_at"])
+                run["codex_thread_id"] or "not recorded", finished)
             try:
                 qa_publish(packet, output, header + "\n\n" + text + "\n", exclusive=not reconcile)
                 run["status"] = "reconciled" if reconcile else "reviewed"
             except OperationError as exc:
-                run["status"] = "failed"
                 run["failure_note"] = str(exc)
-    data["updated_at"] = utc_now()
-    write_state(path, data)
+    except (Interrupted, KeyboardInterrupt):
+        run["status"] = "interrupted"
+        run["failure_note"] = "the helper was interrupted"
+    finally:
+        stop["defer"] = True
+        try:
+            os.unlink(message_path)
+        except OSError:
+            pass
+        run.pop("codex_pid", None)
+        run["elapsed_seconds"] = int(round(time.time() - started))
+        run["finished_at"] = utc_now()
+        data["updated_at"] = run["finished_at"]
+        try:
+            write_state(path, data)
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
     summary = qa_codex_summary(data, run, path)
     if run["status"] not in ("reviewed", "reconciled"):
         if as_json:

@@ -38,7 +38,7 @@ If authenticated browser access is unavailable, stop short of a visual verdict a
 
 ## Independent review
 
-Hand the review to the **other agent** with `agent-pr-review-link --qa`: from Codex, review with Claude; from Claude, review with Codex. The reviewer runs locally and reads the screenshots from disk, so nothing goes to a third-party provider. A Claude reviewer can also open the pages itself. A Codex reviewer started from Claude runs headless with no browser or network: it judges the packet's evidence only, so every live-page check in Capture and inspect evidence stays yours.
+Hand the review to the **other agent** with `agent-pr-review-link --qa`: from Codex, review with Claude; from Claude, review with Codex. The reviewer runs locally and reads the screenshots from disk, so nothing goes to a third-party provider. A Claude reviewer can also open the pages itself. A Codex reviewer started from Claude runs headless, with its web, browser, and connector tools turned off: it judges the packet's evidence only, so every live-page check in Capture and inspect evidence stays yours.
 
 ### Build the packet
 
@@ -52,13 +52,13 @@ Leave your own conclusions and verdicts out of the packet. The helper will not s
 ### Run the blind review
 
 - **From Codex:** `agent-pr-review-link claude --qa <packet> --start`. This starts a Claude background review. Check it with `agent-pr-review-link claude --qa <packet> --status --json` until the status is `reviewed`. `blocked` or `failed` means the review did not complete, and Rob needs to look at the Claude session.
-- **From Claude:** `agent-pr-review-link codex --qa <packet> --start`. This runs a read-only Codex review and waits for it, usually a few minutes; run it in the background if a foreground command would time out first. Exit `0` means the helper wrote `review.md`. Exit `4` means the review did not complete and nothing was written: report the message, check `agent-pr-review-link codex --qa <packet> --status --json`, and do not start a second run while one is in progress. Use `--open` instead only when Rob wants the reviewer to open the live pages itself; that opens Codex desktop with the request prefilled, and Rob presses Enter there.
+- **From Claude:** `agent-pr-review-link codex --qa <packet> --start`. This runs a read-only Codex review and waits for it, usually a few minutes; run it in the background if a foreground command would time out first. Leave the packet alone while it runs: a file added or changed during the review fails it. Exit `0` means the helper wrote `review.md`. Exit `4` means the review did not complete and nothing was written: report the message, check `agent-pr-review-link codex --qa <packet> --status --json`, and do not start a second run while one is in progress. Use `--open` instead only when Rob wants the reviewer to open the live pages itself; that opens Codex desktop with the request prefilled, and Rob presses Enter there.
 
-The reviewer writes `review.md` in the packet. It must give a verdict and specific evidence for **every request**, plus missing evidence and privacy concerns. If `review.md` skips a request, count the review as incomplete for that request.
+The review lands in `review.md` in the packet; a headless Codex reviewer's is saved there by the helper. It must give a verdict and specific evidence for **every request**, plus missing evidence and privacy concerns. If `review.md` skips a request, count the review as incomplete for that request.
 
 ### Reconcile
 
-Only after `review.md` exists, write your conclusions to `implementer.md` in the packet. Then run `agent-pr-review-link claude --qa <packet> --follow-up` from Codex, which resumes the same Claude session, or `agent-pr-review-link codex --qa <packet> --follow-up` from Claude, which starts a fresh read-only Codex run that reads `review.md` and `implementer.md`. The reviewer writes `reconciliation.md`. Evaluate the remaining disagreements yourself. Do not treat the reviewer as an automatic pass or as permission to change the site.
+Only after `review.md` exists, write your conclusions to `implementer.md` in the packet. Then run `agent-pr-review-link claude --qa <packet> --follow-up` from Codex, which resumes the same Claude session, or `agent-pr-review-link codex --qa <packet> --follow-up` from Claude, which starts a fresh read-only Codex run that reads `review.md` and `implementer.md`. The reconciliation lands in `reconciliation.md`. Evaluate the remaining disagreements yourself. Do not treat the reviewer as an automatic pass or as permission to change the site.
 
 Record the reviewer (the other agent and the model named in `review.md`; for a headless Codex run, use the model in the provenance line the helper puts at the top), the review time, and the packet path. If the other agent is not available, use `request-pov` with a text-only packet that describes the screenshots, and label that review **text-only**. Otherwise, record that independent review could not run.
 
