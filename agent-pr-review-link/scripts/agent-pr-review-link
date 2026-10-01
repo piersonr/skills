@@ -1405,8 +1405,9 @@ def qa_codex_locked(action, packet, as_json, path, free):
     if linked:
         raise UsageError("the packet contains a symlinked directory (%s); "
                          "an automatic Codex review needs the files themselves" % ", ".join(linked))
-    reserved = sorted(name for name in os.listdir(packet)
-                      if name in QA_CODEX_RESERVED_NAMES or name.lower() in ("agents.md", "agents.override.md"))
+    # Compared without case: on a case-insensitive filesystem .CODEX is .codex.
+    folded = tuple(name.casefold() for name in QA_CODEX_RESERVED_NAMES)
+    reserved = sorted(name for name in os.listdir(packet) if name.casefold() in folded)
     if reserved:
         raise UsageError("the packet holds %s, which Codex would read as instructions or configuration "
                          "rather than as evidence; rename it before an automatic Codex review" % ", ".join(reserved))
