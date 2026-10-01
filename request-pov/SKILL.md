@@ -20,8 +20,12 @@ Use the bundled `scripts/request_pov.py` helper to consult an external model thr
 0. Confirm an external model is actually wanted. The request must name another model, lineage, or vendor, or ask for a second/outside/independent opinion. A bare "POV", "your take", or "thoughts?" is a request for your own analysis — answer it yourself and stop here. Invoking this skill with a named model or vendor — for example, `request-pov Grok`, `request-pov Sonnet`, or `request-pov Opus` — is destination-specific authorization to send an ordinary non-secret evidence packet to that destination through OpenRouter.
 1. Identify the requested reviewer. When the user names a **model class** — `sol`, `terra`, `opus`, `sonnet`, `fable`, `grok` — pass it straight through as `--model-class <name>` and omit `--lineage`; the nickname resolves to an exact slug and implies its lineage. `/request-pov sol` needs no translation.
 
-   `fable` resolves to `~anthropic/claude-fable-latest` in the Anthropic lineage;
-   preserve the leading `~` in the model slug.
+   `fable` resolves to `~anthropic/claude-fable-latest` in the Anthropic lineage and
+   `sol` to `~openai/gpt-sol-latest` in the OpenAI lineage, so both track the newest
+   release; preserve the leading `~` in the model slug. A floating class can change
+   reviewer behaviour, price, and latency with no change here, so when a review must be
+   repeatable, pin it instead: `--lineage openai --model openai/gpt-6.1-sol`. The
+   `Resolved model` line in the output names the version that actually answered.
 
    Pass `--caller-lineage <your own lineage>` on every call. The helper refuses a target in the same lineage, which is the one thing that would silently turn a cross-lineage review into a self-review. Use `--allow-same-lineage` only when a same-family second opinion is what the user actually asked for, and never describe that result as cross-lineage.
 
