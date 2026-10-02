@@ -79,8 +79,8 @@ Never let one stand in for the other:
 **Nothing verifies a reviewer's lineage.** Cross-lineage review never runs in CI
 (see below), so no CI-verified provenance exists: both kinds above carry a
 declared lineage, and neither may be described as verified. A provenance comment
-that a since-removed CI reviewer left on an older pull request is history for the
-head it names, not evidence for any other.
+that a removed CI reviewer left on an older pull request counts as a published
+review of the head it names, and of no other head.
 
 **A run is not "reviewed" because its process exited.** Count a local run only
 when its report shows a completed, attested review that is still fresh. Count a
@@ -98,9 +98,9 @@ itself sufficient authorization to use the paths below.
 
 **Cross-lineage review never runs in CI.** Do not run one through a GitHub Actions
 workflow or a metered model API key, and do not add, re-enable, or dispatch a CI
-reviewer in any repository. The CI reviewers were retired on 2026-10-01 because
-they billed API usage. After the PR exists, request the review through the
-reviewing lineage's own CLI:
+reviewer in any repository. This does not restrict a `request-pov` outside
+opinion, which is not a cross-lineage review under this policy. After the PR
+exists, request the review through the reviewing lineage's own CLI:
 
 - **Codex-authored PR → Claude review:** `agent-pr-review-link claude --start <full-pr-url>`,
   verified with `agent-pr-review-link claude --status --json <full-pr-url>`.
