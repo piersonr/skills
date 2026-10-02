@@ -67,20 +67,24 @@ immediately before creating the PR or merging.
   assumption. Also required after a rebase or rewrite where the prior reviewed head
   is no longer an ancestor of the new one.
 
-## Three kinds of evidence
+## Two kinds of evidence
 
-Never let one stand in for another:
+Never let one stand in for the other:
 
 | Evidence | What it proves |
 | --- | --- |
 | **Local feedback** — a preflight or local exact-head report | A reviewer read that exact diff. It is unpublished and cannot be checked by others |
 | **GitHub-published review** | A review exists on that head. Its lineage is a declaration, because every agent posts as the same human account |
-| **CI-verified provenance** — where a repository has it | CI selected the reviewer lineage and model for that head |
+
+**Nothing verifies a reviewer's lineage.** Cross-lineage review never runs in CI
+(see below), so no CI-verified provenance exists: both kinds above carry a
+declared lineage, and neither may be described as verified. A provenance comment
+that a removed CI reviewer left on an older pull request counts as a published
+review of the head it names, and of no other head.
 
 **A run is not "reviewed" because its process exited.** Count a local run only
 when its report shows a completed, attested review that is still fresh. Count a
-published review only when it is attached to the expected head commit. Count CI
-provenance only from the CI bot, naming the expected head and a reviewed outcome.
+published review only when it is attached to the expected head commit.
 
 ## Publication stays with the reviewer
 
@@ -92,8 +96,12 @@ Request a post-PR cross-lineage review for every substantial or high-stakes PR,
 and for a routine PR only when the user explicitly asks. The tier requirement is
 itself sufficient authorization to use the paths below.
 
-- **A repository's CI cross-lineage workflow**, where one exists. Prefer it for
-  high-stakes work, because CI verifies the reviewer's provenance.
+**Cross-lineage review never runs in CI.** Do not run one through a GitHub Actions
+workflow or a metered model API key, and do not add, re-enable, or dispatch a CI
+reviewer in any repository. This does not restrict a `request-pov` outside
+opinion, which is not a cross-lineage review under this policy. After the PR
+exists, request the review through the reviewing lineage's own CLI:
+
 - **Codex-authored PR → Claude review:** `agent-pr-review-link claude --start <full-pr-url>`,
   verified with `agent-pr-review-link claude --status --json <full-pr-url>`.
   `--follow-up` requests an exact-head re-review after fixes.
