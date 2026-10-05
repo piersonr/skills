@@ -52,3 +52,31 @@ python3 <clone>/agent-pr-review-link/scripts/install.py check
 ```
 
 See the repository README for the full procedure, including rollback.
+
+## Background publisher identity recovery
+
+The helper removes the caller's harness markers from requests, but Claude's
+existing supervisor merges those requests into its own environment. Deleting a
+request variable does not remove a variable already held by that supervisor.
+Before PR `--start` and `--follow-up`, a model-free `--bg --exec` shell probe
+checks the supervisor worker environment for foreign publisher markers. It
+reports names only and fails closed if the probe is unavailable or contaminated.
+The temporary shell row expires automatically; it is not a review run. QA packet
+reviews and `--status` do not run this publishing preflight.
+
+A clean probe is not a publisher identity attestation. An already running resumed
+worker may retain an older environment, settings or shell startup can introduce
+markers, and the supervisor can change between probe and dispatch. The reviewing
+session must still run its repository publisher's `whoami` before reading the
+diff, and the publisher must keep rejecting genuinely ambiguous identities.
+
+Do not automatically restart a shared supervisor or scrub variables inside a
+reviewer's publishing command. Coordinate any supervisor restart with its other
+sessions. `claude daemon stop --any --keep-workers` preserves running workers,
+including their old environments; it does not clean them. For the pending review, stop only its idle worker with `claude stop <id>`
+(preserving the conversation), then use foreground
+`claude --resume <saved-session-id>` from a clean human shell. Attaching to an
+existing worker retains its environment. Check `whoami`, reconcile the exact head, and only then publish in
+that reviewer session with the existing marker. This requires separate recovery
+execution authorization. If the head changed or the session cannot continue in
+place, use an authorized helper follow-up and its new session/run marker.

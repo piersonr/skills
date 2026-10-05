@@ -80,6 +80,8 @@ import json
 import os
 import re
 import signal
+import shlex
+import tempfile
 import subprocess
 import sys
 import time
@@ -307,6 +309,8 @@ def build_prompt(target, owner, repo, number, url, title, run_id=None,
             "- Before reviewing, ensure this Claude task is titled `PR%d (%s) Review`; rename it if needed. If renaming is unavailable, continue the review and mention that limitation in your final response."
             % (number, repo)
         )
+    if target == "claude":
+        lines.append("- Before reading the diff, run the repository publisher identity check (whoami) when available. If identity is ambiguous or unresolved, stop and report it; never scrub the publishing environment or bypass the publisher.")
     if follow_up:
         lines += [
             "- This is a follow-up review. Re-fetch the current diff and independently verify the current head; do not rely on the earlier mental model.",
@@ -443,6 +447,53 @@ def write_state(path, data):
 
 def claude_binary():
     return os.environ.get("AGENT_PR_REVIEW_LINK_CLAUDE") or "claude"
+
+
+def check_claude_background_environment(folder):
+    """Probe the supervisor's worker environment without invoking a model.
+
+    --bg merges the request env into the existing supervisor env; deleting a
+    key in claude_launch_env() cannot delete it from that supervisor. --exec
+    uses the same worker env builder, but runs a shell command, not Claude.
+    Only foreign publisher marker names leave the probe. Never restart a shared
+    supervisor here: that would affect unrelated sessions.
+    """
+    with tempfile.TemporaryDirectory(prefix="aprl-identity-") as directory:
+        receipt = os.path.join(directory, "markers.json")
+        code = ("import json,os,sys; "
+                "names=[k for k in ('CODEX_THREAD_ID','CODEX_SANDBOX') if k in os.environ]; "
+                "names += ['CURSOR_AGENT'] if os.environ.get('CURSOR_AGENT') else []; "
+                "names += ['AI_AGENT'] if os.environ.get('AI_AGENT','').startswith('codex') else []; "
+                "f=open(sys.argv[1],'x'); json.dump({'markers':names},f); f.close()")
+        command = shlex.join([sys.executable, "-c", code, receipt])
+        try:
+            result = subprocess.run([claude_binary(), "--bg", "--exec", command],
+                                    cwd=folder, env=claude_launch_env(),
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=LAUNCH_TIMEOUT_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            raise OperationError("Claude background identity probe unavailable; no review launched")
+        if result.returncode != 0:
+            raise OperationError("Claude background identity probe failed; no review launched")
+        deadline = time.monotonic() + CMD_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                with open(receipt) as source:
+                    data = json.load(source)
+                break
+            except (FileNotFoundError, json.JSONDecodeError):
+                time.sleep(0.05)
+        else:
+            raise OperationError("Claude background identity probe timed out; no review launched")
+        names = data.get("markers") if isinstance(data, dict) else None
+        allowed = {"CODEX_THREAD_ID", "CODEX_SANDBOX", "CURSOR_AGENT", "AI_AGENT"}
+        if not isinstance(names, list) or any(not isinstance(k, str) or k not in allowed for k in names):
+            raise OperationError("Claude background identity probe invalid; no review launched")
+        if names:
+            raise OperationError("Claude supervisor carries foreign harness markers (%s); no review launched. "
+                                 "Recover from a standalone shell; restarting the shared supervisor needs "
+                                 "coordination with its other sessions. Existing workers can retain old markers."
+                                 % ", ".join(names))
 
 
 def list_claude_agents():
@@ -700,6 +751,7 @@ def automatic_review(action, host, owner, repo, number, url, folder, title_overr
     path = state_path(host, owner, repo, number)
     data = read_state(path)
     pr = lookup_pr(url)
+    check_claude_background_environment(folder)
     title = clean_title(title_override) if title_override is not None else pr["title"]
     if data is None:
         if action == "follow-up":
