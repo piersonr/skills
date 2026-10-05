@@ -751,7 +751,6 @@ def automatic_review(action, host, owner, repo, number, url, folder, title_overr
     path = state_path(host, owner, repo, number)
     data = read_state(path)
     pr = lookup_pr(url)
-    check_claude_background_environment(folder)
     title = clean_title(title_override) if title_override is not None else pr["title"]
     if data is None:
         if action == "follow-up":
@@ -761,7 +760,7 @@ def automatic_review(action, host, owner, repo, number, url, folder, title_overr
         data["folder"] = folder
         if action == "start" and data.get("runs"):
             try:
-                data, existing = refresh_state(data, path)
+                data, existing = refresh_state(data, path, save=False)
             except OperationError:
                 existing = data["runs"][-1]
             if (existing.get("expected_head_sha") == pr["head_sha"] and
@@ -785,6 +784,7 @@ def automatic_review(action, host, owner, repo, number, url, folder, title_overr
     prompt = build_prompt("claude", owner, repo, number, url, title,
                           run_id=run_id, expected_head=pr["head_sha"],
                           follow_up=(action == "follow-up"))
+    check_claude_background_environment(folder)
     launch = launch_claude(prompt, display_name, folder, previous_session_id)
     run = {
         "run_id": run_id,

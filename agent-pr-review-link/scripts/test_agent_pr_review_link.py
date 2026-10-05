@@ -1150,6 +1150,9 @@ class PRBackgroundTests(unittest.TestCase):
                     print(json.dumps([json.loads(agent_path.read_text())]
                                      if agent_path.exists() else []))
                 elif "--exec" in args:
+                    if (root / "probe-fail").exists():
+                        (root / "probe-called").touch()
+                        sys.exit(1)
                     import subprocess
                     # A running supervisor retains keys absent from the request.
                     worker_env = dict(os.environ)
@@ -1203,6 +1206,37 @@ class PRBackgroundTests(unittest.TestCase):
                     with open(state_file) as source:
                         self.assertEqual(source.read(), original)
                     self.assertNotIn(b"caller", result.stderr)
+
+    def test_duplicate_start_does_not_probe_or_change_saved_state(self):
+        self.run_pr("--start", "--json", "--folder", self.env.dir)
+        agent_file = os.path.join(self.env.dir, "agent.json")
+        with open(agent_file) as source:
+            agent = json.load(source)
+        agent["state"] = "working"
+        with open(agent_file, "w") as out:
+            json.dump(agent, out)
+        state_file = os.path.join(self.state, os.listdir(self.state)[0])
+        with open(state_file) as source:
+            original = source.read()
+        with open(os.path.join(self.env.dir, "probe-fail"), "w"):
+            pass
+        repeated = self.run_pr("--start", "--json", "--folder", self.env.dir)
+        self.assertTrue(repeated["duplicate_suppressed"])
+        self.assertEqual(repeated["status"], "running")
+        self.assertFalse(os.path.exists(os.path.join(self.env.dir, "probe-called")))
+        with open(state_file) as source:
+            self.assertEqual(source.read(), original)
+
+    def test_follow_up_without_saved_run_does_not_probe(self):
+        with open(os.path.join(self.env.dir, "probe-fail"), "w"):
+            pass
+        result = self.env.run("claude", "--follow-up", "--folder", self.env.dir, self.url,
+                             extra_env={"PR_TEST_ROOT": self.env.dir,
+                                        "AGENT_PR_REVIEW_LINK_STATE_DIR": self.state,
+                                        "AGENT_PR_REVIEW_LINK_CLAUDE": self.claude})
+        self.assertEqual(result.returncode, 4)
+        self.assertIn(b"no saved Claude review", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.env.dir, "probe-called")))
 
     def test_probe_failure_stops_before_review_launch(self):
         with open(self.claude, "w") as out:
