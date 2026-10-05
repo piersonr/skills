@@ -14,6 +14,8 @@ codex://new and open-app routes, Claude.app's claude://code/new route)."""
 import json
 import os
 import re
+import runpy
+import shlex
 import shutil
 import signal
 import stat
@@ -24,6 +26,7 @@ import textwrap
 import threading
 import time
 import unittest
+from unittest import mock
 from urllib.parse import parse_qs, parse_qsl, unquote, urlsplit
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1052,6 +1055,46 @@ class CodexQATests(unittest.TestCase):
         self.assertTrue(os.path.basename(self.state_file()).startswith("qa-codex--"))
 
 
+class ClaudeEnvironmentProbeTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = runpy.run_path(HELPER)
+        self.check = self.helper["check_claude_background_environment"]
+        self.globals = self.check.__globals__
+
+    def test_clean_request_and_clean_worker_allow_launch(self):
+        real_run = subprocess.run
+        def worker(argv, **kwargs):
+            self.assertNotIn("CODEX_THREAD_ID", kwargs["env"])
+            self.assertNotIn("CLAUDECODE", kwargs["env"])
+            self.assertNotIn("AI_AGENT", kwargs["env"])
+            self.assertNotIn("CURSOR_AGENT", kwargs["env"])
+            real_run(shlex.split(argv[-1]), env=kwargs["env"], check=True)
+            return subprocess.CompletedProcess(argv, 0)
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": "caller", "CLAUDECODE": "1",
+                                         "AI_AGENT": "codex", "CURSOR_AGENT": "1"}), \
+             mock.patch.object(subprocess, "run", side_effect=worker):
+            self.check(None)
+
+    def test_probe_failure_and_invalid_receipts_fail_closed(self):
+        for receipt in (None, {"markers": "wrong"}, {"markers": ["unexpected"]},
+                        {"markers": [None]}, []):
+            def worker(argv, **kwargs):
+                if receipt is not None:
+                    with open(shlex.split(argv[-1])[-1], "w") as out:
+                        json.dump(receipt, out)
+                return subprocess.CompletedProcess(argv, 0)
+            with self.subTest(receipt=receipt), \
+                 mock.patch.object(subprocess, "run", side_effect=worker), \
+                 mock.patch.object(time, "monotonic", side_effect=[0, 0, 11]):
+                with self.assertRaises(self.helper["OperationError"]):
+                    self.check(None)
+        for error in (FileNotFoundError(), subprocess.TimeoutExpired("claude", 30)):
+            with self.subTest(error=type(error).__name__), \
+                 mock.patch.object(subprocess, "run", side_effect=error):
+                with self.assertRaises(self.helper["OperationError"]):
+                    self.check(None)
+
+
 class PRBackgroundTests(unittest.TestCase):
     """PR background status needs a current head as well as a verified review."""
 
@@ -1106,6 +1149,19 @@ class PRBackgroundTests(unittest.TestCase):
                 if args and args[0] == "agents":
                     print(json.dumps([json.loads(agent_path.read_text())]
                                      if agent_path.exists() else []))
+                elif "--exec" in args:
+                    if (root / "probe-fail").exists():
+                        (root / "probe-called").touch()
+                        sys.exit(1)
+                    import subprocess
+                    # A running supervisor retains keys absent from the request.
+                    worker_env = dict(os.environ)
+                    poison = root / "daemon-env.json"
+                    if poison.exists():
+                        worker_env.update(json.loads(poison.read_text()))
+                    subprocess.run(args[args.index("--exec") + 1], shell=True,
+                                   env=worker_env, check=True)
+                    print("backgrounded · probe")
                 elif "--bg" in args:
                     name = args[args.index("--name") + 1]
                     agent_path.write_text(json.dumps({"id": "bg1", "sessionId": "sess1",
@@ -1126,6 +1182,72 @@ class PRBackgroundTests(unittest.TestCase):
         })
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         return json.loads(result.stdout)
+
+    def test_supervisor_contamination_blocks_start_and_follow_up_without_new_run(self):
+        self.run_pr("--start", "--json", "--folder", self.env.dir)
+        state_file = os.path.join(self.state, os.listdir(self.state)[0])
+        with open(state_file) as source:
+            original = source.read()
+        for poison in ({"CODEX_THREAD_ID": ""}, {"CODEX_SANDBOX": "seatbelt"},
+                       {"AI_AGENT": "codex-test"}, {"CURSOR_AGENT": "1"}):
+            with open(os.path.join(self.env.dir, "daemon-env.json"), "w") as out:
+                json.dump(poison, out)
+            for action in ("--start", "--follow-up"):
+                with self.subTest(poison=list(poison), action=action):
+                    result = self.env.run("claude", action, "--json", "--folder", self.env.dir,
+                                          self.url, extra_env={
+                        "PR_TEST_ROOT": self.env.dir,
+                        "AGENT_PR_REVIEW_LINK_STATE_DIR": self.state,
+                        "AGENT_PR_REVIEW_LINK_CLAUDE": self.claude,
+                        "CODEX_THREAD_ID": "caller", "CLAUDECODE": "1",
+                    })
+                    self.assertEqual(result.returncode, 4, result.stderr.decode())
+                    self.assertIn(b"foreign harness markers", result.stderr)
+                    with open(state_file) as source:
+                        self.assertEqual(source.read(), original)
+                    self.assertNotIn(b"caller", result.stderr)
+
+    def test_duplicate_start_does_not_probe_or_change_saved_state(self):
+        self.run_pr("--start", "--json", "--folder", self.env.dir)
+        agent_file = os.path.join(self.env.dir, "agent.json")
+        with open(agent_file) as source:
+            agent = json.load(source)
+        agent["state"] = "working"
+        with open(agent_file, "w") as out:
+            json.dump(agent, out)
+        state_file = os.path.join(self.state, os.listdir(self.state)[0])
+        with open(state_file) as source:
+            original = source.read()
+        with open(os.path.join(self.env.dir, "probe-fail"), "w"):
+            pass
+        repeated = self.run_pr("--start", "--json", "--folder", self.env.dir)
+        self.assertTrue(repeated["duplicate_suppressed"])
+        self.assertEqual(repeated["status"], "running")
+        self.assertFalse(os.path.exists(os.path.join(self.env.dir, "probe-called")))
+        with open(state_file) as source:
+            self.assertEqual(source.read(), original)
+
+    def test_follow_up_without_saved_run_does_not_probe(self):
+        with open(os.path.join(self.env.dir, "probe-fail"), "w"):
+            pass
+        result = self.env.run("claude", "--follow-up", "--folder", self.env.dir, self.url,
+                             extra_env={"PR_TEST_ROOT": self.env.dir,
+                                        "AGENT_PR_REVIEW_LINK_STATE_DIR": self.state,
+                                        "AGENT_PR_REVIEW_LINK_CLAUDE": self.claude})
+        self.assertEqual(result.returncode, 4)
+        self.assertIn(b"no saved Claude review", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.env.dir, "probe-called")))
+
+    def test_probe_failure_stops_before_review_launch(self):
+        with open(self.claude, "w") as out:
+            out.write("#!/bin/sh\nexit 1\n")
+        result = self.env.run("claude", "--start", "--folder", self.env.dir, self.url,
+                             extra_env={"PR_TEST_ROOT": self.env.dir,
+                                        "AGENT_PR_REVIEW_LINK_STATE_DIR": self.state,
+                                        "AGENT_PR_REVIEW_LINK_CLAUDE": self.claude})
+        self.assertEqual(result.returncode, 4)
+        self.assertIn(b"identity probe failed", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.env.dir, "agent.json")))
 
     def test_review_becomes_stale_when_head_moves_after_publication(self):
         started = self.run_pr("--start", "--json", "--folder", self.env.dir)
