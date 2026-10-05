@@ -73,10 +73,12 @@ diff, and the publisher must keep rejecting genuinely ambiguous identities.
 Do not automatically restart a shared supervisor or scrub variables inside a
 reviewer's publishing command. Coordinate any supervisor restart with its other
 sessions. `claude daemon stop --any --keep-workers` preserves running workers,
-including their old environments; it does not clean them. For the pending review, stop only its idle worker with `claude stop <id>`
-(preserving the conversation), then use foreground
+including their old environments; it does not clean them. For the pending review,
+stop only its idle worker with `claude stop <id>` (preserving the conversation),
+then use foreground
 `claude --resume <saved-session-id>` from a clean human shell. Attaching to an
-existing worker retains its environment. Check `whoami`, reconcile the exact head, and only then publish in
-that reviewer session with the existing marker. This requires separate recovery
+existing worker retains its environment. Check `whoami`, reconcile the exact head,
+and only then publish in that reviewer session with the existing marker. This
+requires separate recovery
 execution authorization. If the head changed or the session cannot continue in
 place, use an authorized helper follow-up and its new session/run marker.

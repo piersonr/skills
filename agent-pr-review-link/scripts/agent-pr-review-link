@@ -474,7 +474,8 @@ def check_claude_background_environment(folder):
         except (OSError, subprocess.TimeoutExpired):
             raise OperationError("Claude background identity probe unavailable; no review launched")
         if result.returncode != 0:
-            raise OperationError("Claude background identity probe failed; no review launched")
+            raise OperationError("Claude background identity probe failed; no review launched. "
+                                 "Check CLI support for --bg --exec, workspace trust, and interpreter availability.")
         deadline = time.monotonic() + CMD_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             try:
