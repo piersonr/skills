@@ -80,7 +80,8 @@ on each corrected head. Batching corrections should normally make this a single
 follow-up. The prior preflight reports remain historical evidence at their original heads;
 do not describe them as fresh reviews of the new head. A full re-review trigger
 listed above requires renewed independent review and any local preflight required
-by the tier, followed by the published review of the resulting head.
+by the tier, followed, for substantial and high-stakes PRs, by the published
+review of the resulting head.
 
 - **Batch corrections:** triage all available findings, apply the accepted fixes,
   and run affected validation before requesting the follow-up. Do not launch a
