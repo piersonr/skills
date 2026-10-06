@@ -57,7 +57,9 @@ identity, and a local report path.
 
 Review evidence is valid only for the head it examined. New commits, a moved base,
 or a moved PR head make it stale. Check freshness when a run completes **and**
-immediately before creating the PR or merging.
+immediately before creating the PR or merging. Before PR creation, check the
+required preflight evidence; after creation, check the evidence required by the
+post-PR rule below.
 
 - **Delta review:** only for a confined fix whose design, surface, permissions, and
   data boundary are unchanged. Show the reviewer both the change since the prior
@@ -71,9 +73,11 @@ immediately before creating the PR or merging.
 
 The independent native review and local cross-lineage preflight above are
 **pre-PR gates**. Once the PR exists, a confined fix does not automatically
-restart those gates. For substantial and high-stakes PRs, use one published
-cross-lineage delta follow-up on the final head to assess the corrections. The
-prior preflight reports remain historical evidence at their original heads;
+restart those gates. For a routine PR, have one independent reviewer assess the
+corrected head with a delta review; no automatic cross-lineage review is needed.
+For substantial and high-stakes PRs, use a published cross-lineage delta follow-up
+on each corrected head. Batching corrections should normally make this a single
+follow-up. The prior preflight reports remain historical evidence at their original heads;
 do not describe them as fresh reviews of the new head. A full re-review trigger
 listed above requires renewed independent review and any local preflight required
 by the tier, followed by the published review of the resulting head.
@@ -87,11 +91,12 @@ by the tier, followed by the published review of the resulting head.
   reviewed code. The cumulative diff supplies context; it is not a request to
   restart review of unchanged, settled material. Reopen a rejected finding only
   with new evidence, such as a failing case or a changed assumption or boundary.
-- **Classify by effect:** documentation that changes an operational command,
-  recovery precondition, threshold, or safety claim can be substantive. A
-  README-only change is not an exemption from exact-head review.
-- **Stop when resolved:** the review phase is complete when the required published
-  exact-head review is complete, blockers are fixed, and every other accepted
+- **Classify by effect:** reassess the tier and choose delta or full re-review
+  from the effect of the correction. Changes to operational commands, recovery
+  preconditions, thresholds, or safety claims affect operator behavior; a
+  README-only diff is not exempt from the review its tier requires.
+- **Stop when resolved:** the review phase is complete when the review required
+  for the tier covers the current head, blockers are fixed, and every other accepted
   finding is fixed or explicitly deferred with a reason for human judgment.
   Zero nits is not a merge requirement. Do not request another review merely
   because CI finishes, a status check runs, or an unchanged finding repeats.
