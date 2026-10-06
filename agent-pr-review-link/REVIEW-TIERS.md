@@ -67,6 +67,38 @@ immediately before creating the PR or merging.
   assumption. Also required after a rebase or rewrite where the prior reviewed head
   is no longer an ancestor of the new one.
 
+## Post-PR follow-up and stopping rule
+
+The independent native review and local cross-lineage preflight above are
+**pre-PR gates**. Once the PR exists, a confined fix does not automatically
+restart those gates. For substantial and high-stakes PRs, use one published
+cross-lineage delta follow-up on the final head to assess the corrections. The
+prior preflight reports remain historical evidence at their original heads;
+do not describe them as fresh reviews of the new head. A full re-review trigger
+listed above requires renewed independent review and any local preflight required
+by the tier, followed by the published review of the resulting head.
+
+- **Batch corrections:** triage all available findings, apply the accepted fixes,
+  and run affected validation before requesting the follow-up. Do not launch a
+  separate review cycle for each nit. Batch remaining corrections before merge;
+  batching never excuses a required exact-head review.
+- **Focus the follow-up:** provide the delta, cumulative diff, prior findings and
+  their dispositions. Review the delta and its interactions with the previously
+  reviewed code. The cumulative diff supplies context; it is not a request to
+  restart review of unchanged, settled material. Reopen a rejected finding only
+  with new evidence, such as a failing case or a changed assumption or boundary.
+- **Classify by effect:** documentation that changes an operational command,
+  recovery precondition, threshold, or safety claim can be substantive. A
+  README-only change is not an exemption from exact-head review.
+- **Stop when resolved:** the review phase is complete when the required published
+  exact-head review is complete, blockers are fixed, and every other accepted
+  finding is fixed or explicitly deferred with a reason for human judgment.
+  Zero nits is not a merge requirement. Do not request another review merely
+  because CI finishes, a status check runs, or an unchanged finding repeats.
+  New commits or base changes still require the delta or full review specified
+  above. Required CI, unresolved actionable feedback, human judgment and separate
+  merge/deployment authorization remain independent gates.
+
 ## Two kinds of evidence
 
 Never let one stand in for the other:
