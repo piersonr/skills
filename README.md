@@ -8,7 +8,6 @@ Portable agent skills for coding agents such as Codex and Claude Code.
 | --- | --- |
 | [`request-pov`](request-pov/) | Gets an independent second opinion from a model in another AI lineage through OpenRouter. |
 | [`agent-pr-review-link`](agent-pr-review-link/) | Hands a pull request to the other AI lineage for review, verified against the exact head, under the global [review tiers](agent-pr-review-link/REVIEW-TIERS.md). |
-| [`website-change-qa`](website-change-qa/) | Checks client-requested website changes against the request, with matched before and after screenshots, privacy checks, and a blind review by the other agent through `agent-pr-review-link --qa`. |
 
 ## Install `request-pov`
 
@@ -196,13 +195,14 @@ Both are local. `gh`, `open`, and the agent CLIs are stubbed, so no GitHub
 request is made and no app is opened. To test an installed copy instead, run
 `python3 ~/.local/share/agent-pr-review-link/test_agent_pr_review_link.py`.
 
-## Install `website-change-qa`
+## Retired website-change-qa
 
-Copy the `website-change-qa` directory into your agent's user-level skill directory
-(`~/.codex/skills/` for Codex, `~/.claude/skills/` for Claude Code). Its independent
-review step calls `agent-pr-review-link --qa`, so install that helper first. A
-review requested from Claude runs through the Codex CLI; one requested from Codex
-runs through Claude Code.
+The mandatory website-change-qa skill was retired on October 15, 2026. Its source
+and metadata are preserved in [retired/website-change-qa](retired/website-change-qa/)
+with a non-discoverable SKILL.md.retired entrypoint. Do not install the archive.
+Essential rendered-page, matched desktop/mobile evidence and privacy checks now
+belong in personal guidance. Independent visual review remains available through
+the existing agent-pr-review-link QA interface when needed; no helper was removed.
 
 ## License
 

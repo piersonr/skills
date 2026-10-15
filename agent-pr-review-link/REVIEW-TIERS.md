@@ -37,6 +37,37 @@ reviewer for Codex/GPT-authored work, a Codex/GPT reviewer for Claude-authored
 work. Cursor is a harness, not a lineage; declare the lineage of the model that
 actually wrote the change. Two models of one lineage are not a cross-lineage review.
 
+## Proportional review and evidence
+
+Review requirements specify assurance, not a requirement to build tooling. Use
+existing tools; a missing or broken helper does not by itself justify a replacement
+framework, controller, evidence ledger or monitoring system. A supported alternative
+means an already-installed tool used through its documented interface, preserving
+required isolation, immutable committed-diff binding, review evidence and reviewer
+publication attribution. Keep trusted installed review tooling separate from the
+PR-controlled code. If no suitable alternative exists, report the gap: the dependent
+gate remains unmet and its action does not proceed. Continue unaffected authorized
+work and supported recovery without inventing another approval boundary.
+
+Normal evidence records reviewer identity and declared lineage, base/head, completed
+review and findings/dispositions, deferred risks, and required CI on the candidate.
+Published reviews must be posted by the reviewer and linked to the reviewed head.
+Use existing helper records rather than duplicate state ledgers. Comparative reviewer
+statistics, including accepted-unique counts, are optional for explicitly requested
+experiments; they are not publication or merge gates.
+
+Bounded preliminary local checks may run during development before formal review.
+Final applicable validation must cover the post-review candidate. Refresh affected
+evidence after fixes or base changes and explain why retained evidence remains valid;
+do not automatically restart unchanged review or QA phases. Required high-stakes
+pre-publication review, final-head coverage, safety checks and approvals are unchanged.
+
+Before publishing a high-stakes PR, check the exact committed diff for credentials,
+private/prelaunch content, personal data and newly disclosed access-control
+weaknesses as part of the existing pre-publication review. Record the head and
+result; unresolved disclosure risks block publication. This adds no second review
+or requirement to build a scanner.
+
 ## Local cross-lineage preflight
 
 A read-only review of an immutable snapshot of the committed diff, run before the
@@ -46,10 +77,10 @@ identity, and a local report path.
 - Use the repository's preflight helper where it has one, one per reviewing
   lineage: a Claude reviewer for Codex-authored changes, a Codex reviewer for
   Claude-authored changes.
-- Where a repository has no helper and the tier requires one, record the gap in
-  the PR and get human judgment on it before publication. `request-pov` in this
-  collection is an outside opinion, not a snapshot preflight, and does not fill
-  that gap.
+- If the repository helper is unavailable, use only a supported alternative that
+  satisfies every preflight assurance above. Otherwise record the gap and obtain
+  human judgment before publication; the dependent gate remains unmet. `request-pov`
+  is an outside opinion, not a snapshot preflight, and does not fill that gap.
 - If the other lineage's CLI is unavailable for high-stakes work, record the
   limitation the same way.
 
