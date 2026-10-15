@@ -204,11 +204,12 @@ the archive.
 
 For an existing installation, first retain the essential rendered-page, matched
 before/after desktop/mobile evidence and privacy checks in your personal guidance.
+First move any copy or symlink at ~/.claude/skills/website-change-qa to a
+location outside the active skills directories. For a symlink, record its original
+target and retire the alias itself, without following it or moving its target twice.
 Then move ~/.codex/skills/website-change-qa outside the active skill roots, for
-example to ~/.codex/retired-skills/website-change-qa-YYYYMMDD. Also retire any copy
-or symlink at ~/.claude/skills/website-change-qa outside that active skills directory;
-when it is a symlink, move the alias without changing its target. Keep the retired
-files recoverable rather than reinstalling the archive.
+example to ~/.codex/retired-skills/website-change-qa-YYYYMMDD. Keep the retired files
+recoverable; when restoring an alias, restore its target first.
 
 The core checks intentionally live outside this portable skills repository, in
 your own agent guidance (for example, a global AGENTS.md or CLAUDE.md). Independent

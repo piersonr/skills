@@ -46,8 +46,8 @@ means an already-installed tool used through its documented interface, preservin
 required isolation, immutable committed-diff binding, review evidence and reviewer
 publication attribution. Keep trusted installed review tooling separate from the
 PR-controlled code. If no suitable alternative exists, report the gap: the dependent
-gate remains unmet and its action does not proceed unless the existing, narrowly
-scoped human-judgment exception below applies. Continue unaffected authorized work
+gate remains unmet and its action does not proceed unless the narrowly scoped
+human-judgment exception below applies. Continue unaffected authorized work
 and supported recovery without inventing routine approval boundaries.
 
 Normal evidence records reviewer identity and declared lineage, base/head, completed
@@ -64,11 +64,12 @@ do not automatically restart unchanged review or QA phases. A changed head still
 needs the tier-required delta or full review described below. Required high-stakes
 pre-publication review, final-head coverage, safety checks and approvals are unchanged.
 
-Before publishing a high-stakes PR, check the exact committed diff for credentials,
-private/prelaunch content, personal data and newly disclosed access-control
-weaknesses as part of the existing pre-publication review. Record the head and
-result; unresolved disclosure risks block publication. This adds no second review
-or requirement to build a scanner.
+Before the first push of a high-stakes candidate to a shared or public remote,
+check the exact committed diff for credentials, private/prelaunch content, personal
+data and newly disclosed access-control weaknesses as part of pre-publication
+review. Record the head and result; unresolved disclosure risks block the push
+and PR publication. Use the required review rather than adding a scanner or
+separate review phase.
 
 ## Local cross-lineage preflight
 
@@ -84,10 +85,11 @@ identity, and a local report path.
   failure alone does not qualify for the exception below; an unresolved gap blocks
   publication. `request-pov` is an outside opinion, not a snapshot preflight.
 - Where the repository defines no preflight helper, or the other lineage's CLI is
-  unavailable, the existing human-judgment exception permits publication only
+  unavailable, the human-judgment exception permits publication only
   after an explicit decision accepting that specific preflight limitation. Record
   the gap in the PR, the accepting human, the decision and its candidate head.
-  This is an existing decision boundary, not another routine approval request.
+  Keep this decision separate from routine recovery; do not re-ask for unchanged
+  authority.
   It does not count as a completed review or waive independent review, required
   published review, CI, safety checks, action-time permissions, or merge/deployment
   approvals.
@@ -193,7 +195,8 @@ without implying the pull request itself failed.
 
 | Condition | Recovery |
 | --- | --- |
-| Reviewer CLI missing or signed out | Record the access limitation; for high-stakes work, get human judgment on the gap |
+| Reviewer CLI unavailable | For local preflight only, use the human-judgment exception above and its PR record requirements. Required post-PR review remains unmet until completed |
+| Reviewer CLI signed out | Restore normal authenticated access through supported recovery, then retry; a sign-out alone does not qualify for the preflight exception |
 | Run failed, timed out, or its supervisor died | Read its captured output, fix the cause, start a new run |
 | Completed but unpublished, or not verifiable | Treat it as not reviewed; check the review target and head, then retry |
 | Stale head | Delta or full re-review of the new head, as above |
