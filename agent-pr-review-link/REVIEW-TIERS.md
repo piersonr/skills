@@ -79,15 +79,18 @@ identity, and a local report path.
 - Use the repository's preflight helper where it has one, one per reviewing
   lineage: a Claude reviewer for Codex-authored changes, a Codex reviewer for
   Claude-authored changes.
-- If the repository helper is unavailable, use only a supported alternative that
-  satisfies every preflight assurance above. An unresolved gap blocks publication.
-  `request-pov` is an outside opinion, not a snapshot preflight, and does not fill it.
-- Where the repository has no helper, or the other lineage's CLI is unavailable,
-  the existing human-judgment exception permits publication only after an explicit
-  decision accepting that specific disclosed preflight limitation. This is an
-  existing decision boundary, not another routine approval request. It does not
-  count as a completed review or waive independent review, required published
-  review, CI, safety checks, action-time permissions, or merge/deployment approvals.
+- If the repository defines a helper but it fails or is missing locally, use only
+  a supported alternative that satisfies every preflight assurance above. A helper
+  failure alone does not qualify for the exception below; an unresolved gap blocks
+  publication. `request-pov` is an outside opinion, not a snapshot preflight.
+- Where the repository defines no preflight helper, or the other lineage's CLI is
+  unavailable, the existing human-judgment exception permits publication only
+  after an explicit decision accepting that specific preflight limitation. Record
+  the gap in the PR, the accepting human, the decision and its candidate head.
+  This is an existing decision boundary, not another routine approval request.
+  It does not count as a completed review or waive independent review, required
+  published review, CI, safety checks, action-time permissions, or merge/deployment
+  approvals.
 
 ## Staleness, delta review, and full re-review
 

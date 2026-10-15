@@ -210,10 +210,10 @@ or symlink at ~/.claude/skills/website-change-qa outside that active skills dire
 when it is a symlink, move the alias without changing its target. Keep the retired
 files recoverable rather than reinstalling the archive.
 
-The core checks intentionally live outside this portable skills repository. Rob's
-copy is in ~/.codex/AGENTS.md under "Content and layout edits". Independent visual
-review remains available through the existing agent-pr-review-link QA interface
-when needed; no helper was removed.
+The core checks intentionally live outside this portable skills repository, in
+your own agent guidance (for example, a global AGENTS.md or CLAUDE.md). Independent
+visual review remains available through the existing agent-pr-review-link QA
+interface when needed; no helper was removed.
 
 ## License
 
