@@ -46,8 +46,9 @@ means an already-installed tool used through its documented interface, preservin
 required isolation, immutable committed-diff binding, review evidence and reviewer
 publication attribution. Keep trusted installed review tooling separate from the
 PR-controlled code. If no suitable alternative exists, report the gap: the dependent
-gate remains unmet and its action does not proceed. Continue unaffected authorized
-work and supported recovery without inventing another approval boundary.
+gate remains unmet and its action does not proceed unless the existing, narrowly
+scoped human-judgment exception below applies. Continue unaffected authorized work
+and supported recovery without inventing routine approval boundaries.
 
 Normal evidence records reviewer identity and declared lineage, base/head, completed
 review and findings/dispositions, deferred risks, and required CI on the candidate.
@@ -59,7 +60,8 @@ experiments; they are not publication or merge gates.
 Bounded preliminary local checks may run during development before formal review.
 Final applicable validation must cover the post-review candidate. Refresh affected
 evidence after fixes or base changes and explain why retained evidence remains valid;
-do not automatically restart unchanged review or QA phases. Required high-stakes
+do not automatically restart unchanged review or QA phases. A changed head still
+needs the tier-required delta or full review described below. Required high-stakes
 pre-publication review, final-head coverage, safety checks and approvals are unchanged.
 
 Before publishing a high-stakes PR, check the exact committed diff for credentials,
@@ -78,11 +80,14 @@ identity, and a local report path.
   lineage: a Claude reviewer for Codex-authored changes, a Codex reviewer for
   Claude-authored changes.
 - If the repository helper is unavailable, use only a supported alternative that
-  satisfies every preflight assurance above. Otherwise record the gap and obtain
-  human judgment before publication; the dependent gate remains unmet. `request-pov`
-  is an outside opinion, not a snapshot preflight, and does not fill that gap.
-- If the other lineage's CLI is unavailable for high-stakes work, record the
-  limitation the same way.
+  satisfies every preflight assurance above. An unresolved gap blocks publication.
+  `request-pov` is an outside opinion, not a snapshot preflight, and does not fill it.
+- Where the repository has no helper, or the other lineage's CLI is unavailable,
+  the existing human-judgment exception permits publication only after an explicit
+  decision accepting that specific disclosed preflight limitation. This is an
+  existing decision boundary, not another routine approval request. It does not
+  count as a completed review or waive independent review, required published
+  review, CI, safety checks, action-time permissions, or merge/deployment approvals.
 
 ## Staleness, delta review, and full re-review
 

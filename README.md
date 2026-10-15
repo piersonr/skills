@@ -199,10 +199,21 @@ request is made and no app is opened. To test an installed copy instead, run
 
 The mandatory website-change-qa skill was retired on October 15, 2026. Its source
 and metadata are preserved in [retired/website-change-qa](retired/website-change-qa/)
-with a non-discoverable SKILL.md.retired entrypoint. Do not install the archive.
-Essential rendered-page, matched desktop/mobile evidence and privacy checks now
-belong in personal guidance. Independent visual review remains available through
-the existing agent-pr-review-link QA interface when needed; no helper was removed.
+with non-discoverable SKILL.md.retired and openai.yaml.retired files. Do not install
+the archive.
+
+For an existing installation, first retain the essential rendered-page, matched
+before/after desktop/mobile evidence and privacy checks in your personal guidance.
+Then move ~/.codex/skills/website-change-qa outside the active skill roots, for
+example to ~/.codex/retired-skills/website-change-qa-YYYYMMDD. Also retire any copy
+or symlink at ~/.claude/skills/website-change-qa outside that active skills directory;
+when it is a symlink, move the alias without changing its target. Keep the retired
+files recoverable rather than reinstalling the archive.
+
+The core checks intentionally live outside this portable skills repository. Rob's
+copy is in ~/.codex/AGENTS.md under "Content and layout edits". Independent visual
+review remains available through the existing agent-pr-review-link QA interface
+when needed; no helper was removed.
 
 ## License
 
