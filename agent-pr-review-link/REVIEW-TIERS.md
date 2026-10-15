@@ -37,6 +37,40 @@ reviewer for Codex/GPT-authored work, a Codex/GPT reviewer for Claude-authored
 work. Cursor is a harness, not a lineage; declare the lineage of the model that
 actually wrote the change. Two models of one lineage are not a cross-lineage review.
 
+## Proportional review and evidence
+
+Review requirements specify assurance, not a requirement to build tooling. Use
+existing tools; a missing or broken helper does not by itself justify a replacement
+framework, controller, evidence ledger or monitoring system. A supported alternative
+means an already-installed tool used through its documented interface, preserving
+required isolation, immutable committed-diff binding, review evidence and reviewer
+publication attribution. Keep trusted installed review tooling separate from the
+PR-controlled code. If no suitable alternative exists, report the gap: the dependent
+gate remains unmet and its action does not proceed unless the narrowly scoped
+human-judgment exception below applies. Continue unaffected authorized work
+and supported recovery without inventing routine approval boundaries.
+
+Normal evidence records reviewer identity and declared lineage, base/head, completed
+review and findings/dispositions, deferred risks, and required CI on the candidate.
+Published reviews must be posted by the reviewer and linked to the reviewed head.
+Use existing helper records rather than duplicate state ledgers. Comparative reviewer
+statistics, including accepted-unique counts, are optional for explicitly requested
+experiments; they are not publication or merge gates.
+
+Bounded preliminary local checks may run during development before formal review.
+Final applicable validation must cover the post-review candidate. Refresh affected
+evidence after fixes or base changes and explain why retained evidence remains valid;
+do not automatically restart unchanged review or QA phases. A changed head still
+needs the tier-required delta or full review described below. Required high-stakes
+pre-publication review, final-head coverage, safety checks and approvals are unchanged.
+
+Before the first push of a high-stakes candidate to a shared or public remote,
+check the exact committed diff for credentials, private/prelaunch content, personal
+data and newly disclosed access-control weaknesses as part of pre-publication
+review. Record the head and result; unresolved disclosure risks block the push
+and PR publication. Use the required review rather than adding a scanner or
+separate review phase.
+
 ## Local cross-lineage preflight
 
 A read-only review of an immutable snapshot of the committed diff, run before the
@@ -46,12 +80,19 @@ identity, and a local report path.
 - Use the repository's preflight helper where it has one, one per reviewing
   lineage: a Claude reviewer for Codex-authored changes, a Codex reviewer for
   Claude-authored changes.
-- Where a repository has no helper and the tier requires one, record the gap in
-  the PR and get human judgment on it before publication. `request-pov` in this
-  collection is an outside opinion, not a snapshot preflight, and does not fill
-  that gap.
-- If the other lineage's CLI is unavailable for high-stakes work, record the
-  limitation the same way.
+- If the repository defines a helper but it fails or is missing locally, use only
+  a supported alternative that satisfies every preflight assurance above. A helper
+  failure alone does not qualify for the exception below; an unresolved gap blocks
+  publication. `request-pov` is an outside opinion, not a snapshot preflight.
+- Where the repository defines no preflight helper, or the other lineage's CLI is
+  unavailable, the human-judgment exception permits publication only
+  after an explicit decision accepting that specific preflight limitation. Record
+  the gap in the PR, the accepting human, the decision and its candidate head.
+  Keep this decision separate from routine recovery; do not re-ask for unchanged
+  authority.
+  It does not count as a completed review or waive independent review, required
+  published review, CI, safety checks, action-time permissions, or merge/deployment
+  approvals.
 
 ## Staleness, delta review, and full re-review
 
@@ -154,7 +195,8 @@ without implying the pull request itself failed.
 
 | Condition | Recovery |
 | --- | --- |
-| Reviewer CLI missing or signed out | Record the access limitation; for high-stakes work, get human judgment on the gap |
+| Reviewer CLI unavailable | For local preflight only, use the human-judgment exception above and its PR record requirements. Required post-PR review remains unmet until completed |
+| Reviewer CLI signed out | Restore normal authenticated access through supported recovery, then retry; a sign-out alone does not qualify for the preflight exception |
 | Run failed, timed out, or its supervisor died | Read its captured output, fix the cause, start a new run |
 | Completed but unpublished, or not verifiable | Treat it as not reviewed; check the review target and head, then retry |
 | Stale head | Delta or full re-review of the new head, as above |
