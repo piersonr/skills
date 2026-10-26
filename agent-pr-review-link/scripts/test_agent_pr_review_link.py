@@ -1437,7 +1437,14 @@ class CodexHeadlessTests(unittest.TestCase):
 
     def wait(self, expect):
         r = self.run_codex("--wait", "--json")
-        self.assertEqual(r.returncode, expect, r.stderr.decode())
+        if r.returncode != expect:
+            logs = ""
+            for name in sorted(os.listdir(self.jobs)) if os.path.isdir(self.jobs) else []:
+                if name.endswith((".log", ".json")):
+                    with open(os.path.join(self.jobs, name), errors="replace") as f:
+                        logs += "\n--- %s\n%s" % (name, f.read()[-3000:])
+            self.fail("--wait exited %d, not %d\nstdout: %s\nstderr: %s%s"
+                      % (r.returncode, expect, r.stdout.decode(), r.stderr.decode(), logs))
         return json.loads(r.stdout.decode())
 
     def codex_calls(self, kind=None):
@@ -1458,8 +1465,9 @@ class CodexHeadlessTests(unittest.TestCase):
                                     "CODEX_THREAD_ID": "caller", "AI_AGENT": "claude-code"})
         # The start returns at once with what a calling agent needs to follow the job.
         self.assertIn(started["status"], ("running", "finished"))
-        self.assertTrue(started["log"].startswith(os.path.join(self.jobs, "codex-review-widgets-pr7-")))
-        self.assertTrue(started["log"].endswith(".log"))
+        # <label>-<timestamp>-<run id>: two owners' widgets#7 never share a job
+        self.assertRegex(started["log"], r"^%s-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}\.log$"
+                         % re.escape(os.path.join(self.jobs, "codex-review-widgets-pr7")))
         self.assertEqual(started["pid_file"], started["log"][:-4] + ".pid")
         self.assertEqual(started["status_command"], "agent-pr-review-link codex --status " + self.URL)
         self.assertEqual(started["expected_head_sha"], self.head)
@@ -1635,6 +1643,28 @@ class CodexHeadlessTests(unittest.TestCase):
         self.assertNotEqual(self.log_lines(gone)[-1][:5], "exit=")
         r = self.run_codex("--wait")
         self.assertEqual(r.returncode, 4)
+
+    def test_orphaned_reviewer_blocks_a_relaunch(self):
+        self.configure({"sleep": 30, "publish": True})
+        started = self.start()
+        deadline = time.time() + 10
+        while self.read_pid("codex.pid") is None and time.time() < deadline:
+            time.sleep(0.05)
+        os.kill(started["pid"], signal.SIGKILL)  # the job dies; its reviewer, in its own session, does not
+        time.sleep(0.2)
+        gone = json.loads(self.run_codex("--status", "--json").stdout.decode())
+        self.assertEqual((gone["status"], gone["orphan_codex_pid"]), ("interrupted", self.read_pid("codex.pid")))
+        r = self.run_codex()
+        self.assertEqual(r.returncode, 4, r.stderr.decode())
+        self.assertIn(b"could still publish", r.stderr)
+        self.assertEqual(len(self.codex_calls("exec")), 1)
+        os.kill(self.read_pid("codex.pid"), signal.SIGKILL)
+        deadline = time.time() + 10
+        while pid_running(self.read_pid("codex.pid")) and time.time() < deadline:
+            time.sleep(0.05)
+        self.configure({"publish": True})
+        self.start()
+        self.assertEqual(self.wait(0)["result"], "reviewed")
 
     def test_stopped_job_stops_the_reviewer(self):
         self.configure({"sleep": 30, "publish": True})

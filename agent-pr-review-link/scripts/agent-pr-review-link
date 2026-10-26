@@ -1821,6 +1821,15 @@ def job_pid_running(prefix):
     return pid, "--run-job" in command and prefix in command
 
 
+def codex_reviewer_alive(job):
+    """True while the Codex process a killed job left behind is still running. It could still publish."""
+    pid = job.get("codex_pid")
+    if not pid_alive(pid):
+        return False
+    command = run_quiet(["ps", "-o", "command=", "-p", str(pid)])
+    return command is None or " exec " in " %s " % command
+
+
 def job_start_expired(job):
     try:
         requested = datetime.strptime(job.get("requested_at") or "", "%Y-%m-%dT%H:%M:%SZ")
@@ -1847,7 +1856,8 @@ def codex_job_summary(prefix):
     if state == "interrupted" and result in (None, "starting", "running"):
         result = "interrupted"
     note = job.get("failure_note")
-    if state == "interrupted" and pid_alive(job.get("codex_pid")):
+    orphan = state == "interrupted" and codex_reviewer_alive(job)
+    if orphan:
         note = ((note + "; ") if note else "") + (
             "its Codex process (pid %s) may still be running and could still publish" % job["codex_pid"])
     return {
@@ -1864,6 +1874,7 @@ def codex_job_summary(prefix):
         "codex_thread_id": job.get("codex_thread_id"),
         "codex_model": job.get("codex_model"),
         "failure_note": note,
+        "orphan_codex_pid": job.get("codex_pid") if orphan else None,
         "reviewer": "codex exec, :read-only permission profile, network limited to %s"
                     % ", ".join(job.get("network_domains") or ["GitHub"]),
         "run_id": job.get("run_id"),
@@ -1957,18 +1968,23 @@ def codex_headless_launch(host, owner, repo, number, url, folder, title_override
             existing["duplicate_suppressed"] = True
             emit(existing, render_codex_job(existing) + "\nDuplicate launch suppressed.", as_json)
             return 0
+        if existing and existing.get("orphan_codex_pid"):
+            raise OperationError("the last review job was interrupted, but its Codex process (pid %s) is still "
+                                 "running and could still publish; stop it or let it finish before starting "
+                                 "another review" % existing["orphan_codex_pid"])
     gh_token(host)  # fail now rather than in the background; the job reads it again
     title = clean_title(title_override) if title_override is not None else pr["title"]
     run_id = str(uuid.uuid4())
     label = "codex-review-%s-pr%d" % (re.sub(r"[^A-Za-z0-9._-]", "_", repo.lower())[:60], number)
     directory = jobs_dir()
     os.makedirs(directory, mode=0o700, exist_ok=True)  # an existing, shared directory keeps its mode
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    prefix = os.path.join(directory, "%s-%s" % (label, stamp))
-    suffix = 2
-    while os.path.lexists(prefix + ".json") or os.path.lexists(prefix + ".log"):
-        prefix = os.path.join(directory, "%s-%s-%d" % (label, stamp, suffix))
-        suffix += 1
+    # The run id keeps two owners' same-named repositories apart; creating the log exclusively reserves it.
+    prefix = os.path.join(directory, "%s-%s-%s" % (label, datetime.now().strftime("%Y%m%d-%H%M%S"), run_id[:8]))
+    try:
+        log_fd = os.open(prefix + ".log", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
+    except OSError as exc:
+        raise CodedError(EXIT_JOB_START, "could not reserve the review job's log %s.log (%s)"
+                         % (prefix, exc.__class__.__name__))
     job = {
         "version": STATE_VERSION,
         "kind": "codex-pr-review",
@@ -1988,7 +2004,7 @@ def codex_headless_launch(host, owner, repo, number, url, folder, title_override
     argv = [python, os.path.realpath(__file__), "codex", "--run-job", prefix]
     log = None
     try:
-        log = os.fdopen(os.open(prefix + ".log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
+        log = os.fdopen(log_fd, "ab")
         proc = subprocess.Popen(argv, cwd=folder, stdin=subprocess.DEVNULL, stdout=log,
                                 stderr=subprocess.STDOUT, start_new_session=True)
     except OSError as exc:
