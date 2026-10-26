@@ -1551,6 +1551,28 @@ class CodexHeadlessTests(unittest.TestCase):
         self.assertIn("before the review started", done["failure_note"])
         self.assertEqual(self.codex_calls("exec"), [])
 
+    def test_launcher_that_died_while_starting_does_not_hang(self):
+        # A record with no pid file, left by a launcher killed between the two writes.
+        os.makedirs(self.jobs)
+        os.makedirs(self.state)
+        prefix = os.path.join(self.jobs, "codex-review-widgets-pr7-20260101-000000")
+        record = {"version": 1, "kind": "codex-pr-review", "run_id": "r", "label": "codex-review-widgets-pr7",
+                  "host": "github.com", "owner": "acme", "repo": "widgets", "number": 7, "url": self.URL,
+                  "expected_head_sha": self.head, "requested_at": "2026-01-01T00:00:00Z", "result": "starting"}
+        with open(prefix + ".json", "w") as f:
+            json.dump(record, f)
+        with open(os.path.join(self.state, "codex-pr--github.com--acme--widgets--pr7.json"), "w") as f:
+            json.dump({"version": 1, "job": prefix, "url": self.URL}, f)
+        r = self.run_codex("--wait", "--json")
+        self.assertEqual(r.returncode, 4)
+        self.assertEqual(json.loads(r.stdout.decode())["status"], "interrupted")
+        # and it neither blocks nor suppresses a fresh start
+        started = self.start()
+        self.assertFalse(started.get("duplicate_suppressed"))
+        self.assertEqual(self.wait(0)["result"], "reviewed")
+        self.assertEqual(stat.S_IMODE(os.stat(started["log"]).st_mode), 0o600)
+
+    @unittest.skipIf(sys.platform.startswith("win"), "the start lock needs fcntl")
     def test_concurrent_start_is_refused(self):
         import fcntl
         os.makedirs(self.state)

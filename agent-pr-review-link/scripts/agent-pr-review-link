@@ -129,6 +129,7 @@ import re
 import signal
 import shlex
 import tempfile
+import traceback
 import subprocess
 import sys
 import time
@@ -1820,6 +1821,15 @@ def job_pid_running(prefix):
     return pid, "--run-job" in command and prefix in command
 
 
+def job_start_expired(job):
+    try:
+        requested = datetime.strptime(job.get("requested_at") or "", "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return True
+    age = time.time() - requested.replace(tzinfo=timezone.utc).timestamp()
+    return age > PR_JOB_START_WAIT_SECONDS + 20
+
+
 def codex_job_summary(prefix):
     job = read_job(prefix)
     code = log_exit_code(prefix)
@@ -1828,7 +1838,8 @@ def codex_job_summary(prefix):
         state = "finished"
     elif alive:
         state = "running"
-    elif pid is None and job.get("result") == "starting":
+    elif pid is None and job.get("result") == "starting" and not job_start_expired(job):
+        # Between the record and the pid file. Past the start window, the launcher died there.
         state = "starting"
     else:
         state = "interrupted"
@@ -1931,6 +1942,7 @@ def codex_headless_start(host, owner, repo, number, url, folder, title_override,
 
 
 def codex_headless_launch(host, owner, repo, number, url, folder, title_override, as_json, pr, pointer_path):
+    os.umask(0o077)  # the log holds the reviewer's whole transcript, and the job inherits this mask
     pointer = read_state(pointer_path)
     if pointer and isinstance(pointer.get("job"), str):
         try:
@@ -1976,7 +1988,7 @@ def codex_headless_launch(host, owner, repo, number, url, folder, title_override
     argv = [python, os.path.realpath(__file__), "codex", "--run-job", prefix]
     log = None
     try:
-        log = open(prefix + ".log", "ab")
+        log = os.fdopen(os.open(prefix + ".log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
         proc = subprocess.Popen(argv, cwd=folder, stdin=subprocess.DEVNULL, stdout=log,
                                 stderr=subprocess.STDOUT, start_new_session=True)
     except OSError as exc:
@@ -2044,6 +2056,7 @@ def codex_run_job(prefix):
                    failure_note=one_line(str(exc)))
         code = exc.code
     except Exception as exc:
+        traceback.print_exc(file=sys.stdout)
         job.update(result="failed", failure_note="the job failed unexpectedly (%s)" % exc.__class__.__name__)
         code = 4
     finally:
