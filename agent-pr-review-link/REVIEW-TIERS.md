@@ -191,8 +191,8 @@ exists, request the review through the reviewing lineage's own CLI:
   its own session. Its GitHub token can write, so only its instructions keep it
   to that one review. Verify it with `agent-pr-review-link codex --status --json
   <full-pr-url>`: only a `finished` job with result `reviewed` counts. A job
-  that reports `head_moved`, `not_published`, `failed` or `interrupted` is not a
-  review. `--interactive` is the opt-out. It opens the Codex app with the request
+  that reports `head_moved`, `stale_head`, `verification_unavailable`,
+  `not_published`, `failed` or `interrupted` is not a review of the current head. `--interactive` is the opt-out. It opens the Codex app with the request
   typed in, and nothing is sent until the user presses Enter. A prefilled,
   unsent request is not a review.
 

@@ -21,7 +21,9 @@ reports a ChatGPT login, and it never starts inside CI. The reviewer's
 environment is an allowlist, so no OPENAI_API_KEY, OpenRouter, or other API key
 reaches it. The job checks the live head again after the run. It reports
 head_moved, not reviewed, if the head changed. It counts the review only when
-a published review on the expected head carries the run's marker. --wait blocks
+a published review on the expected head carries the run's marker. --status and
+--wait check the live head again whenever they report a review, and report
+stale_head (exit 6 from --wait) once the PR has moved on. --wait blocks
 until the job ends and exits with the job's code; a calling harness can run it
 in the background to be woken when the review finishes.
 
@@ -1922,10 +1924,27 @@ def codex_pr_status(host, owner, repo, number, as_json, wait=False):
     while wait and summary["status"] in ("running", "starting"):
         time.sleep(float(os.environ.get("AGENT_PR_REVIEW_LINK_POLL_SECONDS") or PR_WAIT_POLL_SECONDS))
         summary = codex_job_summary(prefix)
+    code = summary["exit_code"] if summary["exit_code"] is not None else 4
+    if summary["status"] == "finished" and summary["result"] == "reviewed":
+        # A review counts only for the head it examined, so check the live head every time it is reported.
+        try:
+            pr = lookup_pr(summary["pr_url"])
+        except OperationError:
+            pr = None
+        if pr is None:
+            summary.update(result="verification_unavailable", failure_note="the review was published on %s, but "
+                           "the live PR head could not be read to confirm it is still current"
+                           % summary["expected_head_sha"])
+            code = 4
+        else:
+            summary.update(live_head_sha=pr["head_sha"], pr_state=pr["state"])
+            if pr["head_sha"] != summary["expected_head_sha"]:
+                summary.update(result="stale_head", failure_note="the review covers %s, but the PR head is now %s; "
+                               "it is historical evidence only, so review the new head"
+                               % (summary["expected_head_sha"], pr["head_sha"]))
+                code = EXIT_HEAD_MOVED
     emit(summary, render_codex_job(summary), as_json)
-    if not wait:
-        return 0
-    return summary["exit_code"] if summary["exit_code"] is not None else 4
+    return code if wait else 0
 
 
 def codex_headless_start(host, owner, repo, number, url, folder, title_override, as_json):

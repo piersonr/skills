@@ -48,7 +48,8 @@ to use it is [REVIEW-TIERS.md](REVIEW-TIERS.md). Read it before choosing a tier.
      user presses Enter.
 4. Treat a review as done only when it is verified on the expected head. For
    `claude --status`, that is the `reviewed` status. For the headless Codex
-   review, it is a `finished` job with result `reviewed` and a review URL. A
+   review, it is a `finished` job with result `reviewed` and a review URL. Status
+   checks the live head each time, and reports `stale_head` after a new push. A
    process exit or transcript is not evidence. A stale head needs a delta or
    full re-review, per the tiers.
 5. Report a helper failure without implying the PR failed. Exit codes:

@@ -1551,6 +1551,19 @@ class CodexHeadlessTests(unittest.TestCase):
         self.assertIn("old head only", done["failure_note"])
         self.assertEqual(self.log_lines(done)[-1], "exit=6")
 
+    def test_status_checks_the_live_head_every_time(self):
+        self.start()
+        self.assertEqual(self.wait(0)["result"], "reviewed")
+        self.write("head", "e" * 40)  # a push after the review finished
+        r = self.run_codex("--status", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        stale = json.loads(r.stdout.decode())
+        self.assertEqual((stale["status"], stale["result"], stale["live_head_sha"]), ("finished", "stale_head", "e" * 40))
+        self.assertEqual(stale["review_url"], "https://github.com/acme/widgets/pull/7#pullrequestreview-1")
+        self.assertEqual(self.wait(6)["result"], "stale_head")
+        self.write("head", "")  # gh can no longer report the head
+        self.assertEqual(self.wait(4)["result"], "verification_unavailable")
+
     def test_head_moved_before_the_review_started(self):
         self.write("head-after-first", "d" * 40)
         self.start()
