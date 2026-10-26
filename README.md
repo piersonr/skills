@@ -135,10 +135,22 @@ post-PR cross-lineage review.
 This repository is the **source of truth**. The copy on your `PATH` is an install
 artifact: never edit it. Change the source here, commit, and install again.
 
-Requirements: Git, Python 3.10 or newer, and the GitHub CLI (`gh`). The automatic
-Claude modes also need Claude Code; the Codex desktop handoff needs the Codex desktop app,
-and the automatic Codex QA modes need a current, signed-in Codex CLI (`codex`). Those
-runs start without your Codex configuration, so they use the CLI's default model.
+Requirements: Git, Python 3.10 or newer, and the GitHub CLI (`gh`), signed in. The
+automatic Claude modes also need Claude Code.
+
+The default Codex PR review needs a current Codex CLI (`codex`) signed in with
+ChatGPT. It refuses to start with an API-key login, and it never runs in CI. It
+runs as a background job, with its log and PID under `~/.local/state/agent-jobs/`.
+The reviewer publishes its own review on the PR.
+
+The `--interactive` handoff needs the Codex desktop app. The automatic Codex QA
+modes need the signed-in CLI as well.
+
+Codex runs start without your Codex configuration, so they use the CLI's default
+model. A PR review keeps only your trusted hook approvals, read with Python 3.11's
+`tomllib`. That lets a hook-based publisher identify the session. On Python 3.10
+those hooks do not run, so a publisher that needs them refuses, and the job
+reports `not_published`.
 
 ```bash
 git clone https://github.com/piersonr/skills.git
@@ -192,7 +204,7 @@ python3 agent-pr-review-link/scripts/test_install.py
 ```
 
 Both are local. `gh`, `open`, and the agent CLIs are stubbed, so no GitHub
-request is made and no app is opened. To test an installed copy instead, run
+request is made, no app is opened, and no Codex run starts. To test an installed copy instead, run
 `python3 ~/.local/share/agent-pr-review-link/test_agent_pr_review_link.py`.
 
 ## Retired website-change-qa

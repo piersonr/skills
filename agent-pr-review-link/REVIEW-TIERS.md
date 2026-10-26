@@ -184,9 +184,16 @@ exists, request the review through the reviewing lineage's own CLI:
 - **Codex-authored PR → Claude review:** `agent-pr-review-link claude --start <full-pr-url>`,
   verified with `agent-pr-review-link claude --status --json <full-pr-url>`.
   `--follow-up` requests an exact-head re-review after fixes.
-- **Claude-authored PR → Codex review:** `agent-pr-review-link codex --open <full-pr-url>`
-  opens the Codex app with a read-only review request typed in. Nothing is sent
-  until the user presses Enter, and a prefilled, unsent request is not a review.
+- **Claude-authored PR → Codex review:** `agent-pr-review-link codex <full-pr-url>`,
+  run from the PR's checkout, starts a headless Codex review in the background
+  on the user's ChatGPT login, never an API key. Its filesystem is read-only, it
+  reviews the exact head resolved at launch, and it publishes its own review in
+  its own session. Verify it with `agent-pr-review-link codex --status --json
+  <full-pr-url>`: only a `finished` job with result `reviewed` counts. A job
+  that reports `head_moved`, `not_published`, `failed` or `interrupted` is not a
+  review. `--interactive` is the opt-out. It opens the Codex app with the request
+  typed in, and nothing is sent until the user presses Enter. A prefilled,
+  unsent request is not a review.
 
 ## Failure recovery
 
@@ -196,7 +203,7 @@ without implying the pull request itself failed.
 | Condition | Recovery |
 | --- | --- |
 | Reviewer CLI unavailable | For local preflight only, use the human-judgment exception above and its PR record requirements. Required post-PR review remains unmet until completed |
-| Reviewer CLI signed out | Restore normal authenticated access through supported recovery, then retry; a sign-out alone does not qualify for the preflight exception |
+| Reviewer CLI signed out (for Codex, also an API-key login instead of ChatGPT) | Restore normal authenticated access through supported recovery, then retry; a sign-out alone does not qualify for the preflight exception |
 | Run failed, timed out, or its supervisor died | Read its captured output, fix the cause, start a new run |
 | Completed but unpublished, or not verifiable | Treat it as not reviewed; check the review target and head, then retry |
 | Stale head | Delta or full re-review of the new head, as above |

@@ -28,13 +28,36 @@ to use it is [REVIEW-TIERS.md](REVIEW-TIERS.md). Read it before choosing a tier.
      `agent-pr-review-link claude --status --json <full-pr-url>`.
      After fixes, `--follow-up` requests an exact-head re-review.
    - Claude-authored PR, Codex reviews:
-     `agent-pr-review-link codex --open <full-pr-url>`. This prefills a read-only
-     review request in the Codex app; nothing is sent until the user presses Enter.
+     `agent-pr-review-link codex <full-pr-url>`, run from the PR's checkout. It
+     starts a headless background review and returns at once. The output gives
+     the job's log, PID and status command. Report it as `Waiting on`, and run
+     `agent-pr-review-link codex --wait <full-pr-url>` in the background so you
+     are woken when it ends. `--status [--json]` reports `running`, `finished`
+     (with the result and the review URL) or `interrupted`.
+     The reviewer runs `codex exec` on the ChatGPT login. It never uses an API
+     key, and it never runs in CI. Its filesystem is read-only, and its shell can
+     reach only the PR's GitHub host. It reviews the head resolved when the job
+     started and publishes its own COMMENT review, the way the repository's
+     instructions require. For a re-review after fixes, run it again on the new
+     head.
+     `--interactive` (formerly `--open`, which still works) is the opt-out. It
+     opens the Codex app with the request typed in, and nothing is sent until the
+     user presses Enter.
 4. Treat a review as done only when it is verified on the expected head. For
-   `claude --status`, that is the `reviewed` status; a process exit or transcript
-   is not evidence. A stale head needs a delta or full re-review, per the tiers.
-5. Report a helper failure without implying the PR failed. Exit status 3 means the
-   app could not be opened, and the output still carries the link.
+   `claude --status`, that is the `reviewed` status. For the headless Codex
+   review, it is a `finished` job with result `reviewed` and a review URL. A
+   process exit or transcript is not evidence. A stale head needs a delta or
+   full re-review, per the tiers.
+5. Report a helper failure without implying the PR failed. Exit codes:
+   - 3: the app could not be opened, and the output still carries the link.
+   - 5: Codex is not logged in with ChatGPT.
+   - 6: the head moved.
+   - 7: no published review on the expected head carries the run's marker.
+   - 8: the background job failed to start.
+   - 4: any other operational failure, including a failed or timed-out Codex
+     run.
+
+   The job's log ends with `exit=<code>`.
 
 Pass the full PR URL exactly as GitHub returned it; it is the only source of
 repository identity. Run the helper from the PR's checkout.

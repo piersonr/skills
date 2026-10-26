@@ -1,10 +1,35 @@
 #!/usr/bin/env python3
 """Create reciprocal pull-request review handoffs between coding agents.
 
+Headless Codex review (the default for the codex target):
+
+    agent-pr-review-link codex [--json] <full-pr-url>
+    agent-pr-review-link codex --status [--json] <full-pr-url>
+    agent-pr-review-link codex --wait [--json] <full-pr-url>
+
+The default starts a background job that runs `codex exec` against the PR's
+local checkout and returns at once, printing the job's log, PID, and status
+command. The reviewer reviews the head resolved from the PR when the job
+starts, and publishes its own COMMENT review on the PR, in its own session, the
+way the repository's instructions require. It works in Codex's :read-only
+permission profile. Its filesystem is read-only and its shell can reach only
+the PR's GitHub host. The helper refuses to start unless `codex login status`
+reports a ChatGPT login, and it never starts inside CI. The reviewer's
+environment is an allowlist, so no OPENAI_API_KEY, OpenRouter, or other API key
+reaches it. The job checks the live head again after the run. It reports
+head_moved, not reviewed, if the head changed. It counts the review only when
+a published review on the expected head carries the run's marker. --wait blocks
+until the job ends and exits with the job's code; a calling harness can run it
+in the background to be woken when the review finishes.
+
 Desktop-link compatibility modes:
 
-    agent-pr-review-link codex  [--open] <full-pr-url>
+    agent-pr-review-link codex  --interactive|--open <full-pr-url>
+    agent-pr-review-link codex  --link|--url <full-pr-url>
     agent-pr-review-link claude [--open] <full-pr-url>
+
+--interactive (and its older spelling, --open) opens the Codex app with the
+request typed in; nothing is sent until a person presses Enter there.
 
 Automatic Claude review modes:
 
@@ -44,6 +69,10 @@ background where the calling harness limits a foreground command.
 Options:
     --open         open the desktop deep link with the prompt prefilled; it is
                    not submitted, so a person must press Enter
+    --interactive  the same as --open; the opt-out from a headless Codex review
+    --link         print the desktop link without opening it (what a bare
+                   `codex <url>` printed before headless became the default)
+    --wait         wait for the PR's headless Codex review job to end
     --start        start a named Claude background review immediately, or run
                    a Codex QA review to completion
     --follow-up    resume the saved Claude conversation for a fresh-head review,
@@ -68,11 +97,26 @@ AGENT_PR_REVIEW_LINK_NO_OPEN=1 turns --open into a no-op.
 AGENT_PR_REVIEW_LINK_STATE_DIR overrides the coordination-state directory.
 AGENT_PR_REVIEW_LINK_CLAUDE overrides the Claude executable for tests.
 AGENT_PR_REVIEW_LINK_CODEX overrides the Codex executable.
-AGENT_PR_REVIEW_LINK_CODEX_TIMEOUT sets the Codex QA run limit in seconds
-(default 900).
+AGENT_PR_REVIEW_LINK_CODEX_TIMEOUT sets the Codex run limit in seconds (default
+900 for QA, 1800 for a PR review).
+AGENT_PR_REVIEW_LINK_JOBS_DIR overrides where headless review jobs keep their
+log, PID, and record files (default ~/.local/state/agent-jobs).
 
-Exit status: 0 on success; 2 for invalid input; 3 when --open was requested and
-the OS opener failed; 4 for an automatic-mode operational failure.
+Exit status:
+    0  success
+    2  invalid input
+    3  --open/--interactive was requested and the OS opener failed
+    4  an automatic-mode operational failure, including a failed or timed-out
+       Codex run and a refusal to run inside CI
+    5  Codex is not logged in with ChatGPT (signed out, or signed in with an
+       API key)
+    6  the PR head moved before or during the headless review
+    7  the headless review finished, but no published review on the expected
+       head carries the run's marker
+    8  the headless review job failed to start
+A headless job's log ends with exit=<code>, and the job exits with that code.
+--wait exits with it too. The start command itself exits 0 once the job is
+running.
 """
 
 import hashlib
@@ -125,6 +169,22 @@ QA_CODEX_RESERVED_NAMES = ("AGENTS.md", "AGENTS.override.md", ".codex", ".agents
 QA_STOP_SIGNALS = tuple(getattr(signal, name) for name in ("SIGTERM", "SIGHUP", "SIGQUIT", "SIGINT")
                         if hasattr(signal, name))
 STATE_VERSION = 1
+EXIT_NOT_LOGGED_IN = 5
+EXIT_HEAD_MOVED = 6
+EXIT_NOT_PUBLISHED = 7
+EXIT_JOB_START = 8
+PR_CODEX_TIMEOUT_SECONDS = 1800
+PR_JOB_START_WAIT_SECONDS = 10
+PR_WAIT_POLL_SECONDS = 15
+# The PR reviewer's hooks stay on: a repository's publisher can depend on a trusted
+# SessionStart hook to know which session is publishing.
+PR_CODEX_DISABLED_FEATURES = tuple(name for name in QA_CODEX_DISABLED_FEATURES if name != "hooks")
+# Unlike the QA reviewer, no OPENAI_ variable passes: the review must run on the ChatGPT login.
+PR_CODEX_ENV_NAMES = QA_CODEX_ENV_NAMES + ("GH_PROMPT_DISABLED", "GH_NO_UPDATE_NOTIFIER", "GIT_TERMINAL_PROMPT")
+PR_CODEX_ENV_PREFIXES = ("LC_", "SSL_CERT_", "XDG_")
+PR_CODEX_PROFILE = "aprl_pr_review"
+CI_ENV_NAMES = ("CI", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "TF_BUILD", "JENKINS_URL", "CIRCLECI")
+EXIT_LINE_RE = re.compile(r"^exit=(-?[0-9]+)$")
 
 # GitHub's own name rules: owners are alphanumeric plus single hyphens (max
 # 39); repositories are alphanumeric plus . _ - (max 100) and never "." or "..".
@@ -144,7 +204,15 @@ class UsageError(Exception):
 
 
 class OperationError(Exception):
-    pass
+    code = 4
+
+
+class CodedError(OperationError):
+    """An operational failure with its own documented exit status."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
 
 
 def utc_now():
@@ -290,7 +358,8 @@ def review_marker(run_id, head_sha):
 
 
 def build_prompt(target, owner, repo, number, url, title, run_id=None,
-                 expected_head=None, follow_up=False):
+                 expected_head=None, follow_up=False, headless=False):
+    """HEADLESS is an unattended `codex exec` run in a read-only sandbox."""
     guidance = "AGENTS.md" if target == "codex" else "CLAUDE.md and AGENTS.md"
     summary = title if title else "title unavailable; see the URL"
     lines = [
@@ -316,12 +385,22 @@ def build_prompt(target, owner, repo, number, url, title, run_id=None,
             "- This is a follow-up review. Re-fetch the current diff and independently verify the current head; do not rely on the earlier mental model.",
             "- Inspect the earlier review and determine whether accepted findings were resolved, but report any new issues as well.",
         ]
+    if headless:
+        lines += [
+            "- This run is unattended: nobody can answer a question or approve a command, so do not ask for either.",
+            "- The filesystem is read-only and shell network access is limited to GitHub. Do not try to write files or work around the sandbox; pass content to commands on stdin.",
+            "- Publish the review the way this repository's instructions require, including any review-publishing wrapper and identity check they name. Where they name none, post it with `gh api` to the pull request's reviews endpoint. Never publish it as a plain issue comment.",
+            "- Publish exactly one review, with event COMMENT. Anchor each finding to its file and line in the diff, and include a short summary. Never APPROVE or REQUEST_CHANGES.",
+            "- If the publisher refuses, report its error and stop. Do not fall back to another way of posting unless the repository's instructions allow it.",
+        ]
     if run_id and expected_head:
         marker = review_marker(run_id, expected_head)
         lines += [
             "- Review exactly head commit `%s`. Immediately before publishing, re-fetch the live PR head. If it differs, do not publish; report that the review became stale." % expected_head,
+            "- Publish a COMMENT review; never APPROVE or REQUEST_CHANGES." if headless else
             "- Publish only COMMENT or REQUEST_CHANGES, never APPROVE.",
-            "- End the published GitHub review body with this marker on its own line:",
+            "- End the published GitHub review body with this marker on its own line:" if not headless else
+            "- End the published GitHub review body with this marker on its own line. If the publisher builds the body from a summary field, end the summary with it:",
             marker,
             "- Finish the session by stating the GitHub review URL and concise finding counts.",
         ]
@@ -1146,10 +1225,10 @@ def codex_isolation_args():
     return args, disabled
 
 
-def codex_timeout():
+def codex_timeout(default=QA_CODEX_TIMEOUT_SECONDS):
     raw = os.environ.get("AGENT_PR_REVIEW_LINK_CODEX_TIMEOUT")
     if not raw:
-        return QA_CODEX_TIMEOUT_SECONDS
+        return default
     try:
         value = int(raw)
     except ValueError:
@@ -1571,6 +1650,475 @@ def qa_codex_locked(action, packet, as_json, path, free):
     return 0
 
 
+# --- headless Codex PR review: a background `codex exec` job that publishes itself ----
+
+
+def jobs_dir():
+    override = os.environ.get("AGENT_PR_REVIEW_LINK_JOBS_DIR")
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    return os.path.join(os.path.expanduser("~"), ".local", "state", "agent-jobs")
+
+
+def in_ci():
+    return any(os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no")
+               for name in CI_ENV_NAMES)
+
+
+def gh_hostname(host):
+    return host.split(":")[0].lower()
+
+
+def codex_pr_env(token=None, host="github.com"):
+    """The PR reviewer's environment: an allowlist with no API key in it, plus the
+    GitHub token its shell needs to publish (the sandbox cannot reach the keychain)."""
+    env = {key: value for key, value in command_env().items()
+           if key in PR_CODEX_ENV_NAMES or key.startswith(PR_CODEX_ENV_PREFIXES)}
+    if token:
+        if gh_hostname(host) == "github.com":
+            env["GH_TOKEN"] = token
+        else:
+            env["GH_ENTERPRISE_TOKEN"] = token
+            env["GH_HOST"] = gh_hostname(host)
+    return env
+
+
+def check_codex_login():
+    """Refuse unless the Codex CLI is signed in with ChatGPT. The output is never
+    echoed: for an API-key login it includes part of the key."""
+    try:
+        proc = subprocess.run([codex_binary(), "login", "status"], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=CMD_TIMEOUT_SECONDS, env=codex_pr_env())
+    except FileNotFoundError:
+        raise CodedError(EXIT_NOT_LOGGED_IN, "the Codex CLI was not found; install it and run `codex login`")
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CodedError(EXIT_NOT_LOGGED_IN, "could not check `codex login status` (%s)" % exc.__class__.__name__)
+    text = (proc.stdout + b"\n" + proc.stderr).decode("utf-8", "replace")
+    if proc.returncode == 0 and re.search(r"^Logged in using ChatGPT\b", text, re.M):
+        return
+    if re.search(r"api[ -]?key", text, re.I):
+        raise CodedError(EXIT_NOT_LOGGED_IN, "Codex is signed in with an API key, not ChatGPT; the review must "
+                         "run on the ChatGPT login. Run `codex logout`, then `codex login`; no review was started")
+    raise CodedError(EXIT_NOT_LOGGED_IN, "Codex is not logged in with ChatGPT; run `codex login`. "
+                     "No review was started")
+
+
+def gh_token(host):
+    token = run_quiet(["gh", "auth", "token", "--hostname", gh_hostname(host)])
+    if not token:
+        raise OperationError("gh is not signed in for %s, so the reviewer could not publish; "
+                             "no review was started" % gh_hostname(host))
+    return token
+
+
+def codex_hook_trust():
+    """Carry the hook trust already recorded in the user's Codex config.
+
+    --ignore-user-config drops it, and an untrusted hook is skipped silently,
+    which leaves a hook-based publisher unable to say which session is
+    publishing. Only hooks the user trusted, at the hash they trusted, run."""
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10
+        return []
+    home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+    try:
+        with open(os.path.join(home, "config.toml"), "rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError):
+        return []
+    hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+    state = hooks.get("state") if isinstance(hooks.get("state"), dict) else {}
+    parts = ["%s={trusted_hash=%s, enabled=true}" % (json.dumps(key), json.dumps(value["trusted_hash"]))
+             for key, value in sorted(state.items())
+             if isinstance(value, dict) and value.get("enabled") is True
+             and isinstance(value.get("trusted_hash"), str)]
+    return ["-c", "hooks.state={%s}" % ", ".join(parts)] if parts else []
+
+
+def codex_pr_args(host):
+    """Flags for the PR reviewer, on top of `codex exec -C <checkout>`.
+
+    `-s read-only` also turns the network off, and the reviewer must reach
+    GitHub to publish. So the run uses the :read-only permission profile with
+    network allowed only to the PR's GitHub host, enforced by Codex's network
+    proxy. The filesystem stays read-only; the user's config, saved rules, MCP
+    servers, plugins, web search, browser, and computer use are left out."""
+    listed = run_quiet([codex_binary(), "features", "list"], env=codex_pr_env()) or ""
+    known = {line.split()[0] for line in listed.splitlines() if line.split()}
+    disabled = [name for name in PR_CODEX_DISABLED_FEATURES if name in known]
+    if not disabled:
+        raise OperationError("could not read the Codex CLI's feature list (is `codex` installed and "
+                             "current?), so its web, app, browser, and computer-use tools cannot be "
+                             "turned off; no review was started")
+    name = gh_hostname(host)
+    domains = [name] if name != "github.com" else ["github.com", "api.github.com"]
+    allow = ", ".join("%s=\"allow\"" % json.dumps(domain) for domain in domains)
+    args = ["--ignore-user-config", "--ignore-rules",
+            "-c", 'web_search="disabled"',
+            "-c", 'approval_policy="never"',
+            "-c", 'forced_login_method="chatgpt"',
+            "-c", 'default_permissions="%s"' % PR_CODEX_PROFILE,
+            "-c", 'permissions.%s.extends=":read-only"' % PR_CODEX_PROFILE,
+            "-c", 'permissions.%s.network={enabled=true, mode="full", domains={%s}}' % (PR_CODEX_PROFILE, allow),
+            "-c", "features.network_proxy={enabled=true}",
+            # The environment is already an allowlist; the token in it is what the shell publishes with.
+            "-c", 'shell_environment_policy.inherit="all"',
+            "-c", "shell_environment_policy.ignore_default_excludes=true"]
+    for feature in disabled:
+        args += ["--disable", feature]
+    return args + codex_hook_trust(), disabled, domains
+
+
+def codex_pr_pointer(host, owner, repo, number):
+    safe_host = re.sub(r"[^A-Za-z0-9._-]", "_", host.lower())
+    return os.path.join(state_dir(), "codex-pr--%s--%s--%s--pr%d.json" %
+                        (safe_host, owner.lower(), repo.lower(), number))
+
+
+def read_job(prefix):
+    job = read_state(prefix + ".json")
+    if job is None or job.get("kind") != "codex-pr-review":
+        raise OperationError("the review job record %s.json is missing or has an unsupported format" % prefix)
+    return job
+
+
+def read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def log_exit_code(prefix):
+    """The exit=<code> the job wrote as its log's last line, or None."""
+    text = read_text(prefix + ".log") or ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    match = EXIT_LINE_RE.match(lines[-1]) if lines else None
+    return int(match.group(1)) if match else None
+
+
+def job_pid_running(prefix):
+    try:
+        pid = int((read_text(prefix + ".pid") or "").strip())
+    except ValueError:
+        return None, False
+    if not pid_alive(pid):
+        return pid, False
+    # A recycled PID is not the job: trust it only while its command names this job.
+    command = run_quiet(["ps", "-o", "command=", "-p", str(pid)])
+    if command is None:
+        return pid, sys.platform.startswith("win")
+    return pid, "--run-job" in command and prefix in command
+
+
+def codex_job_summary(prefix):
+    job = read_job(prefix)
+    code = log_exit_code(prefix)
+    pid, alive = job_pid_running(prefix)
+    if code is not None:
+        state = "finished"
+    elif alive:
+        state = "running"
+    else:
+        state = "interrupted"
+    result = job.get("result")
+    if state == "interrupted" and result in (None, "starting", "running"):
+        result = "interrupted"
+    return {
+        "status": state,
+        "result": result if state != "running" else None,
+        "exit_code": code,
+        "pr_url": job.get("url"),
+        "pr_number": job.get("number"),
+        "repository": "%s/%s" % (job.get("owner"), job.get("repo")),
+        "expected_head_sha": job.get("expected_head_sha"),
+        "live_head_sha": job.get("live_head_sha"),
+        "review_url": (job.get("verified_review") or {}).get("url"),
+        "verified_review": job.get("verified_review"),
+        "codex_thread_id": job.get("codex_thread_id"),
+        "codex_model": job.get("codex_model"),
+        "failure_note": job.get("failure_note"),
+        "reviewer": "codex exec, :read-only permission profile, network limited to %s"
+                    % ", ".join(job.get("network_domains") or ["GitHub"]),
+        "run_id": job.get("run_id"),
+        "label": job.get("label"),
+        "pid": pid,
+        "log": prefix + ".log",
+        "pid_file": prefix + ".pid",
+        "record": prefix + ".json",
+        "status_command": "agent-pr-review-link codex --status %s" % job.get("url"),
+        "wait_command": "agent-pr-review-link codex --wait %s" % job.get("url"),
+    }
+
+
+def render_codex_job(summary, started=False):
+    number = summary.get("pr_number")
+    if started:
+        lines = ["Headless Codex review of PR #%s started in the background; it publishes its own review."
+                 % number]
+    elif summary["status"] == "finished":
+        lines = ["Headless Codex review of PR #%s: finished, %s (exit %s)."
+                 % (number, summary.get("result"), summary.get("exit_code"))]
+    else:
+        lines = ["Headless Codex review of PR #%s: %s." % (number, summary["status"])]
+    if summary.get("review_url"):
+        lines.append("Review: %s" % summary["review_url"])
+    if summary.get("failure_note") and summary["status"] != "running":
+        lines.append("Note: %s" % summary["failure_note"])
+    lines += [
+        "Expected head: %s" % summary.get("expected_head_sha"),
+        "Log: %s" % summary.get("log"),
+        "PID: %s" % summary.get("pid"),
+        "Status command: %s" % summary.get("status_command"),
+    ]
+    if summary["status"] == "running":
+        lines.append("Wait command: %s (exits with the job's code when it ends)" % summary.get("wait_command"))
+    return "\n".join(lines)
+
+
+def codex_pr_status(host, owner, repo, number, as_json, wait=False):
+    pointer = read_state(codex_pr_pointer(host, owner, repo, number))
+    if pointer is None or not isinstance(pointer.get("job"), str):
+        raise OperationError("no headless Codex review job exists for this PR")
+    prefix = pointer["job"]
+    summary = codex_job_summary(prefix)
+    while wait and summary["status"] == "running":
+        time.sleep(float(os.environ.get("AGENT_PR_REVIEW_LINK_POLL_SECONDS") or PR_WAIT_POLL_SECONDS))
+        summary = codex_job_summary(prefix)
+    emit(summary, render_codex_job(summary), as_json)
+    if not wait:
+        return 0
+    return summary["exit_code"] if summary["exit_code"] is not None else 4
+
+
+def codex_headless_start(host, owner, repo, number, url, folder, title_override, as_json):
+    if in_ci():
+        raise OperationError("a headless Codex review never runs in CI; run it from a local session")
+    if not folder:
+        raise OperationError("a headless Codex review runs in the PR's local checkout, so that the "
+                             "repository's instructions apply; run it from there or pass --folder PATH")
+    check_codex_login()
+    pr = lookup_pr(url)
+    if pr["state"] != "OPEN":
+        raise OperationError("the pull request is %s; no review was started" % pr["state"].lower())
+    pointer_path = codex_pr_pointer(host, owner, repo, number)
+    pointer = read_state(pointer_path)
+    if pointer and isinstance(pointer.get("job"), str):
+        try:
+            existing = codex_job_summary(pointer["job"])
+        except OperationError:
+            existing = None
+        if existing and existing["status"] == "running":
+            if existing["expected_head_sha"] != pr["head_sha"]:
+                raise OperationError("a headless Codex review of an earlier head (%s) is still running; "
+                                     "wait for it, or check %s" % (existing["expected_head_sha"],
+                                                                   existing["status_command"]))
+            existing["duplicate_suppressed"] = True
+            emit(existing, render_codex_job(existing) + "\nDuplicate launch suppressed.", as_json)
+            return 0
+    gh_token(host)  # fail now rather than in the background; the job reads it again
+    title = clean_title(title_override) if title_override is not None else pr["title"]
+    run_id = str(uuid.uuid4())
+    label = "codex-review-%s-pr%d" % (re.sub(r"[^A-Za-z0-9._-]", "_", repo.lower())[:60], number)
+    directory = jobs_dir()
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    prefix = os.path.join(directory, "%s-%s" % (label, stamp))
+    suffix = 2
+    while os.path.lexists(prefix + ".json") or os.path.lexists(prefix + ".log"):
+        prefix = os.path.join(directory, "%s-%s-%d" % (label, stamp, suffix))
+        suffix += 1
+    job = {
+        "version": STATE_VERSION,
+        "kind": "codex-pr-review",
+        "run_id": run_id,
+        "label": label,
+        "host": host, "owner": owner, "repo": repo, "number": number, "url": url,
+        "folder": folder,
+        "title": title,
+        "expected_head_sha": pr["head_sha"],
+        "review_marker": review_marker(run_id, pr["head_sha"]),
+        "requested_at": utc_now(),
+        "result": "starting",
+    }
+    write_state(prefix + ".json", job)
+    write_state(pointer_path, {"version": STATE_VERSION, "job": prefix, "url": url, "updated_at": utc_now()})
+    python = os.environ.get("AGENT_PR_REVIEW_LINK_JOB_PYTHON") or sys.executable
+    argv = [python, os.path.realpath(__file__), "codex", "--run-job", prefix]
+    log = None
+    try:
+        log = open(prefix + ".log", "ab")
+        proc = subprocess.Popen(argv, cwd=folder, stdin=subprocess.DEVNULL, stdout=log,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as exc:
+        job.update(result="failed_to_start", failure_note="could not start the job (%s)" % exc.__class__.__name__)
+        write_state(prefix + ".json", job)
+        if log is not None:
+            log.write(b"could not start the review job\nexit=%d\n" % EXIT_JOB_START)
+        raise CodedError(EXIT_JOB_START, "the headless review job failed to start (%s); log: %s.log"
+                         % (exc.__class__.__name__, prefix))
+    finally:
+        if log is not None:
+            log.close()
+    with open(prefix + ".pid", "w", encoding="utf-8") as handle:
+        handle.write("%d\n" % proc.pid)
+    # The job records itself as running before anything slow; a job that never does failed to start.
+    deadline = time.monotonic() + PR_JOB_START_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if read_job(prefix).get("result") != "starting":
+            break
+        if proc.poll() is not None:
+            break
+        time.sleep(0.05)
+    if read_job(prefix).get("result") == "starting":
+        if proc.poll() is None:
+            stop_process(proc)
+        job.update(result="failed_to_start", failure_note="the job did not come up")
+        write_state(prefix + ".json", job)
+        with open(prefix + ".log", "ab") as handle:
+            handle.write(b"the review job did not come up\nexit=%d\n" % EXIT_JOB_START)
+        raise CodedError(EXIT_JOB_START, "the headless review job failed to start; log: %s.log" % prefix)
+    summary = codex_job_summary(prefix)
+    emit(summary, render_codex_job(summary, started=True), as_json)
+    return 0
+
+
+def job_log(message):
+    sys.stdout.write("[%s] %s\n" % (utc_now(), message))
+    sys.stdout.flush()
+
+
+def codex_run_job(prefix):
+    """The background job itself. Its stdout and stderr are the log."""
+    directory = os.path.realpath(jobs_dir())
+    if os.path.dirname(os.path.realpath(prefix)) != directory:
+        raise UsageError("--run-job is internal; its job must be in %s" % directory)
+    job = read_job(prefix)
+    job.update(result="running", runner_pid=os.getpid(), started_at=utc_now())
+    write_state(prefix + ".json", job)
+
+    def on_stop(signum, frame):
+        raise Interrupted()
+
+    previous = {sig: signal.signal(sig, on_stop) for sig in QA_STOP_SIGNALS}
+    code = 4
+    try:
+        code = codex_run_review(job, prefix)
+    except (Interrupted, KeyboardInterrupt):
+        job.update(result="interrupted", failure_note="the job was stopped")
+        code = None
+    except UsageError as exc:
+        job.update(result="failed", failure_note=one_line(str(exc)))
+        code = 2
+    except OperationError as exc:
+        job.update(result=job.get("result") if job.get("result") not in ("running", None) else "failed",
+                   failure_note=one_line(str(exc)))
+        code = exc.code
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        job["finished_at"] = utc_now()
+        job["exit_code"] = code
+        write_state(prefix + ".json", job)
+        job_log("result: %s%s" % (job.get("result"), ("; " + job["failure_note"]) if job.get("failure_note") else ""))
+        if (job.get("verified_review") or {}).get("url"):
+            job_log("review: %s" % job["verified_review"]["url"])
+    if code is None:
+        # A stopped job leaves no exit line, so --status reports it as interrupted.
+        return 4
+    sys.stdout.write("exit=%d\n" % code)
+    sys.stdout.flush()
+    return code
+
+
+def codex_run_review(job, prefix):
+    host, url, expected = job["host"], job["url"], job["expected_head_sha"]
+    pr = lookup_pr(url)
+    job["live_head_sha"] = pr["head_sha"]
+    if pr["head_sha"] != expected:
+        job.update(result="head_moved", failure_note="the PR head moved to %s before the review started; "
+                   "nothing was reviewed" % pr["head_sha"])
+        return EXIT_HEAD_MOVED
+    check_codex_login()
+    isolation, disabled, domains = codex_pr_args(host)
+    env = codex_pr_env(gh_token(host), host)
+    job.update(disabled_features=disabled, network_domains=domains,
+               codex_version=run_quiet([codex_binary(), "--version"], env=codex_pr_env()))
+    message_path = prefix + ".message.md"
+    prompt = build_prompt("codex", job["owner"], job["repo"], job["number"], url, job.get("title") or "",
+                          run_id=job["run_id"], expected_head=expected, headless=True)
+    argv = [codex_binary(), "exec", "-C", job["folder"]] + isolation + ["--json", "-o", message_path, "-"]
+    timeout = codex_timeout(PR_CODEX_TIMEOUT_SECONDS)
+    job_log("reviewing %s at head %s with codex exec (limit %d seconds)" % (url, expected, timeout))
+    log_offset = os.path.getsize(prefix + ".log") if os.path.exists(prefix + ".log") else 0
+    started = time.time()
+    proc = None
+    try:
+        proc = subprocess.Popen(argv, cwd=job["folder"], stdin=subprocess.PIPE, env=env,
+                                start_new_session=True)
+        job["codex_pid"] = proc.pid
+        write_state(prefix + ".json", job)
+        proc.communicate(prompt.encode("utf-8"), timeout=timeout)
+        outcome = "ok" if proc.returncode == 0 else "exit %d" % proc.returncode
+    except OSError as exc:
+        if proc is not None:
+            stop_process(proc)
+        outcome = "could not run the Codex CLI (%s)" % exc.__class__.__name__
+    except subprocess.TimeoutExpired:
+        stop_process(proc)
+        outcome = "timed_out"
+    except BaseException:
+        if proc is not None:
+            stop_process(proc)
+        raise
+    finally:
+        job.pop("codex_pid", None)
+        job["elapsed_seconds"] = int(round(time.time() - started))
+    sys.stdout.write("\n")
+    events = []
+    with open(prefix + ".log", "r", encoding="utf-8", errors="replace") as handle:
+        handle.seek(log_offset)
+        for line in handle:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+    job["codex_thread_id"] = codex_thread_id(events)
+    job["codex_model"] = codex_session_model(job["codex_thread_id"])
+    final = (read_text(message_path) or "").strip()
+    if final:
+        job_log("reviewer's final message:\n%s" % final)
+    pr = lookup_pr(url)
+    job["live_head_sha"] = pr["head_sha"]
+    reviews = list_github_reviews(host, job["owner"], job["repo"], job["number"])
+    verified = find_verified_review(job, reviews)
+    if verified:
+        job["verified_review"] = verified
+    if pr["head_sha"] != expected:
+        job.update(result="head_moved", failure_note="the PR head moved to %s during the review; %s" % (
+            pr["head_sha"], "the published review covers the old head only" if verified
+            else "nothing counts as reviewed"))
+        return EXIT_HEAD_MOVED
+    if outcome == "timed_out":
+        job.update(result="timed_out", failure_note="stopped at the %d-second limit" % timeout)
+        return 4
+    if outcome != "ok":
+        detail = codex_failure_note(events)
+        job.update(result="failed", failure_note="%s: %s" % (outcome, detail) if detail else outcome)
+        return 4
+    if verified:
+        job["result"] = "reviewed"
+        return 0
+    job.update(result="not_published", failure_note="no published COMMENT review on %s carries this run's "
+               "marker%s" % (expected, "; GitHub's review list could not be read" if reviews is None else ""))
+    return EXIT_NOT_PUBLISHED
+
+
 def qa_main(target, packet, do_open, do_start, do_follow_up, do_status, reconcile,
             as_json, only_url):
     automatic = do_start or do_follow_up or do_status
@@ -1603,7 +2151,8 @@ def main(argv):
     args = list(argv)
     only_url = no_lookup = do_open = no_folder = as_json = False
     do_start = do_follow_up = do_status = reconcile = False
-    title = folder = qa = None
+    interactive = link_only = do_wait = False
+    title = folder = qa = run_job = None
     positional = []
     while args:
         arg = args.pop(0)
@@ -1618,6 +2167,16 @@ def main(argv):
             no_lookup = True
         elif arg == "--open":
             do_open = True
+        elif arg == "--interactive":
+            interactive = True
+        elif arg == "--link":
+            link_only = True
+        elif arg == "--wait":
+            do_wait = True
+        elif arg == "--run-job":
+            if not args:
+                raise UsageError("--run-job needs a value")
+            run_job = args.pop(0)
         elif arg == "--start":
             do_start = True
         elif arg == "--follow-up":
@@ -1647,6 +2206,12 @@ def main(argv):
             raise UsageError("unknown option: %s" % arg)
         else:
             positional.append(arg)
+    if run_job is not None:
+        if positional != ["codex"] or len(argv) != 3:
+            raise UsageError("--run-job is internal to headless Codex reviews")
+        return codex_run_job(run_job)
+    if qa is not None and (interactive or link_only or do_wait):
+        raise UsageError("--interactive, --link, and --wait are pull request options; use --open or --status with --qa")
     if qa is not None:
         if len(positional) != 1:
             raise UsageError("usage: agent-pr-review-link {codex|claude} --qa PACKET [--open|--reconcile|--start|--follow-up|--status]")
@@ -1662,21 +2227,30 @@ def main(argv):
     if reconcile:
         raise UsageError("--reconcile applies only to --qa")
     if len(positional) != 2:
-        raise UsageError("usage: agent-pr-review-link {codex|claude} [--open|--start|--follow-up|--status] <full-pr-url>")
+        raise UsageError("usage: agent-pr-review-link {codex|claude} [--interactive|--open|--link|--start|--follow-up|--status|--wait] <full-pr-url>")
     target, raw_url = positional[0].lower(), positional[1]
     if target not in TARGETS:
         raise UsageError("target must be 'codex' or 'claude', got %r" % positional[0])
-    actions = sum(bool(item) for item in (do_open, do_start, do_follow_up, do_status))
-    if actions > 1:
-        raise UsageError("choose only one of --open, --start, --follow-up, or --status")
-    automatic = do_start or do_follow_up or do_status
-    if automatic and target != "claude":
-        raise UsageError("automatic review modes currently support only the claude target")
-    if automatic and (only_url or no_folder):
-        raise UsageError("--url and --no-folder are desktop-link options, not automatic review options")
-    if as_json and not automatic:
-        raise UsageError("--json is available only with --start, --follow-up, or --status")
+    # --interactive is the documented opt-out from a headless Codex review; --open is its older name.
+    do_open = do_open or interactive
+    if sum(bool(item) for item in (do_open, do_start, do_follow_up, do_status, do_wait, link_only)) > 1:
+        raise UsageError("choose only one of --interactive/--open, --link, --start, --follow-up, --status, or --wait")
+    if target == "codex" and (do_start or do_follow_up):
+        raise UsageError("--start and --follow-up are Claude modes; `agent-pr-review-link codex <url>` "
+                         "already runs a headless review (use it again on the new head for a re-review)")
+    if do_wait and target != "codex":
+        raise UsageError("--wait applies only to a headless Codex review")
+    # A desktop-link option keeps the link output, so callers from before headless keep working.
+    link_mode = do_open or link_only or only_url or no_lookup or no_folder
+    headless = target == "codex" and not link_mode
+    automatic = do_start or do_follow_up or do_status or do_wait
+    if automatic and (only_url or no_folder or no_lookup):
+        raise UsageError("--url, --no-lookup, and --no-folder are desktop-link options, not automatic review options")
+    if as_json and not (automatic or headless):
+        raise UsageError("--json is available only with a headless Codex review, --start, --follow-up, --status, or --wait")
     host, owner, repo, number, url = parse_pr_url(raw_url)
+    if target == "codex" and (do_status or do_wait):
+        return codex_pr_status(host, owner, repo, number, as_json, wait=do_wait)
     if folder is not None:
         folder = os.path.abspath(os.path.expanduser(folder))
         if not os.path.isdir(folder):
@@ -1685,6 +2259,8 @@ def main(argv):
         folder = detect_checkout(host, owner, repo)
     if no_folder:
         folder = None
+    if headless:
+        return codex_headless_start(host, owner, repo, number, url, folder, title, as_json)
     if do_status:
         return automatic_status(host, owner, repo, number, url, as_json)
     if do_start or do_follow_up:
@@ -1715,4 +2291,4 @@ if __name__ == "__main__":
         sys.exit(2)
     except OperationError as exc:
         sys.stderr.write("agent-pr-review-link: %s\n" % exc)
-        sys.exit(4)
+        sys.exit(exc.code)
