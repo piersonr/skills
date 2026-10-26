@@ -1776,6 +1776,50 @@ class CodexHeadlessTests(unittest.TestCase):
         self.assertEqual(self.codex_calls(), [])
 
 
+class CodexJobSummaryRaceTests(unittest.TestCase):
+    """A job that finishes while --status reads it is never half-reported."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="aprl-race-")
+        self.helper = runpy.run_path(HELPER)
+        self.globals = self.helper["codex_job_summary"].__globals__
+        self.prefix = os.path.join(self.dir, "codex-review-x-pr1-20260101-000000-abcd1234")
+        self.job = {"version": 1, "kind": "codex-pr-review", "result": "running", "url": "u",
+                    "requested_at": "2026-01-01T00:00:00Z"}
+        self.helper["write_state"](self.prefix + ".json", self.job, private_dir=False)
+        with open(self.prefix + ".log", "w") as f:
+            f.write("[t] reviewing\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def finish(self):
+        # The job's own order: the final record, then the exit line, then it exits.
+        self.helper["write_state"](self.prefix + ".json", dict(self.job, result="reviewed"), private_dir=False)
+        with open(self.prefix + ".log", "a") as f:
+            f.write("exit=0\n")
+
+    def test_finishing_between_reads(self):
+        real_log, alive = self.globals["log_exit_code"], [True]
+        def pid_check(prefix):
+            return 1, alive[0]
+        for moment in ("before the log", "after the pid check"):
+            with self.subTest(moment=moment):
+                self.setUp()
+                def log_read(prefix, moment=moment):
+                    if moment == "before the log":
+                        self.finish()
+                    else:
+                        self.finish()
+                        alive[0] = False
+                    return real_log(prefix)
+                with mock.patch.dict(self.globals, {"log_exit_code": log_read, "job_pid_running": pid_check}):
+                    summary = self.helper["codex_job_summary"](self.prefix)
+                self.assertEqual((summary["status"], summary["result"], summary["exit_code"]),
+                                 ("finished", "reviewed", 0))
+                alive[0] = True
+
+
 def pid_running(pid):
     try:
         os.kill(pid, 0)

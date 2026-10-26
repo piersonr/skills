@@ -1842,9 +1842,11 @@ def job_start_expired(job):
 
 
 def codex_job_summary(prefix):
-    job = read_job(prefix)
-    code = log_exit_code(prefix)
+    # The job writes its record, then its exit line, then exits, so read in the reverse order:
+    # a live check before an absent exit line, and an exit line before the record it vouches for.
     pid, alive = job_pid_running(prefix)
+    code = log_exit_code(prefix)
+    job = read_job(prefix)
     if code is not None:
         state = "finished"
     elif alive:
