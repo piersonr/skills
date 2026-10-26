@@ -200,7 +200,12 @@ class HelperTests(unittest.TestCase):
     def tearDown(self):
         self.env.close()
 
+    LINK_FLAGS = ("--link", "--url", "--open", "--interactive", "--no-lookup", "--no-folder")
+
     def ok(self, *args):
+        # A bare `codex <url>` now starts a headless review; these tests are about the link.
+        if args and args[0] == "codex" and not set(args) & set(self.LINK_FLAGS):
+            args = ("codex", "--link") + args[1:]
         r = self.env.run(*args)
         self.assertEqual(r.returncode, 0, r.stderr.decode())
         self.assertEqual(r.stderr, b"")
@@ -1296,6 +1301,534 @@ class PRBackgroundTests(unittest.TestCase):
         self.set_reviews([dict(base, state="PENDING", submitted_at=None)])
         again = self.run_pr("--start", "--json", "--folder", self.env.dir)
         self.assertFalse(again.get("duplicate_suppressed"))
+
+
+HEADLESS_GH_STUB = r'''#!{python}
+"""A `gh` stand-in for headless reviews: the PR head and reviews come from files, and nothing
+is ever written to GitHub."""
+import json, os, pathlib, sys
+root = pathlib.Path({root!r})
+args = sys.argv[1:]
+with open(root / "gh.log", "a") as f:
+    f.write(json.dumps(args) + "\n")
+if args[:2] == ["pr", "view"]:
+    head = (root / "head").read_text().strip()
+    if (root / "head-after-first").exists() and not (root / "head-moved").exists():
+        (root / "head").write_text((root / "head-after-first").read_text())  # moves after this answer
+        (root / "head-moved").write_text("")
+    print(json.dumps({{"title": "Fixture change", "headRefOid": head,
+                      "state": (root / "pr-state").read_text().strip() if (root / "pr-state").exists() else "OPEN",
+                      "url": args[2]}}))
+elif args[:2] == ["auth", "token"]:
+    if (root / "no-gh-auth").exists():
+        sys.exit(1)
+    print("gho_FAKE_TOKEN_VALUE")
+elif args[:1] == ["api"] and "GET" in args and args[-3].endswith("/reviews"):
+    print(json.dumps([json.loads((root / "reviews.json").read_text())]))
+else:
+    sys.exit(9)  # never a GitHub write
+'''
+
+HEADLESS_CODEX_STUB = r'''#!{python}
+"""A `codex` stand-in. codex.cfg beside its log chooses how the fake review behaves; it cannot
+come through the environment, because the helper passes the reviewer an allowlist."""
+import json, os, pathlib, re, sys, time
+root = pathlib.Path({root!r})
+cfg = json.loads((root / "codex.cfg").read_text())
+args = sys.argv[1:]
+leaked = sorted(k for k in os.environ if re.search("API_KEY|OPENAI|OPENROUTER|ANTHROPIC|^CLAUDE|^CURSOR|^AI_AGENT$|^CODEX_THREAD_ID$", k))
+with open(root / "codex.log", "a") as f:
+    f.write(json.dumps({{"args": args, "env": leaked, "gh_token": os.environ.get("GH_TOKEN") == "gho_FAKE_TOKEN_VALUE"}}) + "\n")
+if args[:2] == ["login", "status"]:
+    print(cfg.get("login", "Logged in using ChatGPT"))
+    sys.exit(cfg.get("login_exit", 0))
+if args[:1] == ["--version"]:
+    print("codex-cli 9.9.9")
+    sys.exit(0)
+if args[:2] == ["features", "list"]:
+    print("apps  stable  true\ncomputer_use  stable  true\nhooks  stable  true\nmulti_agent  stable  true")
+    sys.exit(0)
+prompt = sys.stdin.read()
+(root / "prompt.txt").write_text(prompt)
+(root / "codex.pid.tmp").write_text(str(os.getpid()))
+os.replace(root / "codex.pid.tmp", root / "codex.pid")
+print(json.dumps({{"type": "thread.started", "thread_id": "thread-0042"}}), flush=True)
+time.sleep(cfg.get("sleep", 0))
+head = re.search(r"Review exactly head commit `([0-9a-f]+)`", prompt).group(1)
+marker = re.search(r"^<!-- agent-pr-review: .* -->$", prompt, re.M).group(0)
+if cfg.get("move_head"):
+    (root / "head").write_text(cfg["move_head"])
+if cfg.get("publish"):
+    (root / "reviews.json").write_text(json.dumps([{{
+        "body": "Summary.\n" + marker, "commit_id": cfg.get("publish_head", head), "state": cfg.get("publish_state", "COMMENTED"),
+        "submitted_at": "2026-10-26T00:00:00Z", "html_url": "https://github.com/acme/widgets/pull/7#pullrequestreview-1",
+        "user": {{"login": "reviewer"}}, "id": 1}}]))
+with open(args[args.index("-o") + 1], "w") as f:
+    f.write(cfg.get("message", "Published review."))
+sys.exit(cfg.get("exit", 0))
+'''
+
+
+class CodexHeadlessTests(unittest.TestCase):
+    """The default codex mode: a background `codex exec` job that publishes its own review."""
+
+    URL = "https://github.com/acme/widgets/pull/7"
+
+    def setUp(self):
+        self.env = Env()
+        self.root = self.env.dir
+        self.head = "a" * 40
+        self.write("head", self.head)
+        self.write("reviews.json", "[]")
+        self.jobs = os.path.join(self.root, "jobs")
+        self.state = os.path.join(self.root, "state")
+        self.checkout = os.path.join(self.root, "checkout")
+        os.mkdir(self.checkout)
+        for name, template in (("gh", HEADLESS_GH_STUB), ("codex-stub", HEADLESS_CODEX_STUB)):
+            path = os.path.join(self.env.bin, name)
+            with open(path, "w") as f:
+                f.write(template.format(python=sys.executable, root=self.root))
+            os.chmod(path, 0o755)
+        self.configure({"publish": True})
+        self.started = []
+
+    def tearDown(self):
+        for pid in self.started + [self.read_pid("codex.pid")]:
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        self.env.close()
+
+    def write(self, name, text):
+        with open(os.path.join(self.root, name), "w") as f:
+            f.write(text)
+
+    def read_pid(self, name):
+        try:
+            with open(os.path.join(self.root, name)) as f:
+                return int(f.read())
+        except (OSError, ValueError):
+            return None
+
+    def configure(self, cfg):
+        self.write("codex.cfg.tmp", json.dumps(cfg))
+        os.replace(os.path.join(self.root, "codex.cfg.tmp"), os.path.join(self.root, "codex.cfg"))
+
+    def run_codex(self, *args, extra=None, folder=True):
+        env = {"AGENT_PR_REVIEW_LINK_STATE_DIR": self.state,
+               "AGENT_PR_REVIEW_LINK_JOBS_DIR": self.jobs,
+               "AGENT_PR_REVIEW_LINK_CODEX": os.path.join(self.env.bin, "codex-stub"),
+               "AGENT_PR_REVIEW_LINK_POLL_SECONDS": "0.1"}
+        env.update(extra or {})
+        argv = ["codex"] + list(args)
+        if folder and not set(args) & {"--status", "--wait"}:
+            argv += ["--folder", self.checkout]
+        return self.env.run(*(argv + [self.URL]), extra_env=env)
+
+    def start(self, *args, extra=None):
+        r = self.run_codex("--json", *args, extra=extra)
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        out = json.loads(r.stdout.decode())
+        if out.get("pid"):
+            self.started.append(out["pid"])
+        return out
+
+    def wait(self, expect):
+        r = self.run_codex("--wait", "--json")
+        if r.returncode != expect:
+            logs = ""
+            for name in sorted(os.listdir(self.jobs)) if os.path.isdir(self.jobs) else []:
+                if name.endswith((".log", ".json")):
+                    with open(os.path.join(self.jobs, name), errors="replace") as f:
+                        logs += "\n--- %s\n%s" % (name, f.read()[-3000:])
+            self.fail("--wait exited %d, not %d\nstdout: %s\nstderr: %s%s"
+                      % (r.returncode, expect, r.stdout.decode(), r.stderr.decode(), logs))
+        return json.loads(r.stdout.decode())
+
+    def codex_calls(self, kind=None):
+        try:
+            with open(os.path.join(self.root, "codex.log")) as f:
+                calls = [json.loads(line) for line in f]
+        except OSError:
+            return []
+        return [c for c in calls if kind is None or c["args"][:1] == [kind]]
+
+    def log_lines(self, summary):
+        with open(summary["log"]) as f:
+            return [line for line in f.read().splitlines() if line.strip()]
+
+    def test_default_runs_headless_read_only_and_publishes(self):
+        started = self.start(extra={"OPENAI_API_KEY": "sk-should-not-pass", "OPENROUTER_API_KEY": "or-x",
+                                    "CODEX_API_KEY": "c-x", "ANTHROPIC_API_KEY": "a-x", "CLAUDECODE": "1",
+                                    "CODEX_THREAD_ID": "caller", "AI_AGENT": "claude-code"})
+        # The start returns at once with what a calling agent needs to follow the job.
+        self.assertIn(started["status"], ("running", "finished"))
+        # <label>-<timestamp>-<run id>: two owners' widgets#7 never share a job
+        self.assertRegex(started["log"], r"^%s-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}\.log$"
+                         % re.escape(os.path.join(self.jobs, "codex-review-widgets-pr7")))
+        self.assertEqual(started["pid_file"], started["log"][:-4] + ".pid")
+        self.assertEqual(started["status_command"], "agent-pr-review-link codex --status " + self.URL)
+        self.assertEqual(started["expected_head_sha"], self.head)
+        done = self.wait(0)
+        self.assertEqual((done["status"], done["result"], done["exit_code"]), ("finished", "reviewed", 0))
+        self.assertEqual(done["review_url"], "https://github.com/acme/widgets/pull/7#pullrequestreview-1")
+        self.assertEqual(done["codex_thread_id"], "thread-0042")
+        self.assertEqual(self.log_lines(done)[-1], "exit=0")
+        with open(done["pid_file"]) as f:
+            self.assertEqual(int(f.read()), done["pid"])
+        # No API key, and none of the calling agent's markers, reaches any Codex process.
+        calls = self.codex_calls()
+        self.assertTrue(calls)
+        self.assertEqual([c["env"] for c in calls], [[]] * len(calls))
+        (call,) = self.codex_calls("exec")
+        self.assertTrue(call["gh_token"])  # the shell publishes with gh, which cannot reach the keychain
+        args = call["args"]
+        self.assertEqual(args[args.index("-C") + 1], self.checkout)
+        self.assertIn("--ignore-user-config", args)
+        self.assertIn("--ignore-rules", args)
+        configs = [args[i + 1] for i, a in enumerate(args) if a == "-c"]
+        self.assertIn('default_permissions="aprl_pr_review"', configs)
+        self.assertIn('permissions.aprl_pr_review.extends=":read-only"', configs)
+        self.assertIn('permissions.aprl_pr_review.network={enabled=true, mode="full", '
+                      'domains={"github.com"="allow", "api.github.com"="allow"}}', configs)
+        self.assertIn("features.network_proxy={enabled=true}", configs)
+        self.assertIn('forced_login_method="chatgpt"', configs)
+        self.assertIn('approval_policy="never"', configs)
+        self.assertIn('web_search="disabled"', configs)
+        for writable in ("workspace-write", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox",
+                         "--add-dir", "-s", "--sandbox", "--full-auto"):
+            self.assertNotIn(writable, args)
+        disabled = [args[i + 1] for i, a in enumerate(args) if a == "--disable"]
+        self.assertEqual(disabled, ["apps", "computer_use", "multi_agent"])  # hooks stay on for the publisher
+        with open(os.path.join(self.root, "prompt.txt")) as f:
+            prompt = f.read()
+        self.assertIn("Review exactly head commit `%s`" % self.head, prompt)
+        self.assertIn("<!-- agent-pr-review: run=%s head=%s -->" % (done["run_id"], self.head), prompt)
+        self.assertIn("event COMMENT", prompt)
+        self.assertIn("Never APPROVE or REQUEST_CHANGES", prompt)
+        self.assertIn("this repository's instructions", prompt)
+        self.assertIn("Do not modify code, commit, push, merge", prompt)
+        self.assertNotIn("Publish only COMMENT or REQUEST_CHANGES", prompt)
+        # The token is handed over, never printed.
+        for name in ("prompt.txt", "gh.log"):
+            with open(os.path.join(self.root, name)) as f:
+                self.assertNotIn("gho_FAKE", f.read())
+        for path in (done["log"], done["record"]):
+            with open(path) as f:
+                self.assertNotIn("gho_FAKE", f.read())
+        self.assertNotIn("sk-should-not-pass", json.dumps(done))
+
+    def test_refuses_unless_logged_in_with_chatgpt(self):
+        for cfg in ({"login": "Not logged in", "login_exit": 1},
+                    {"login": "Logged in using an API key - sk-proj-***ABCD"},
+                    {"login": "Logged in using an access token"}):
+            with self.subTest(cfg=cfg):
+                self.configure(cfg)
+                r = self.run_codex()
+                self.assertEqual(r.returncode, 5, r.stderr.decode())
+                self.assertIn(b"ChatGPT", r.stderr)
+                self.assertIn(b"no review was started", r.stderr.lower())
+                self.assertNotIn(b"sk-proj", r.stderr + r.stdout)
+                self.assertEqual(self.codex_calls("exec"), [])
+                self.assertFalse(os.path.exists(self.jobs))
+
+    def test_never_runs_in_ci(self):
+        for name in ("CI", "GITHUB_ACTIONS"):
+            r = self.run_codex(extra={name: "true"})
+            self.assertEqual(r.returncode, 4)
+            self.assertIn(b"never runs in CI", r.stderr)
+        self.assertEqual(self.codex_calls(), [])
+
+    def test_head_moved_during_the_review_is_refused(self):
+        self.configure({"publish": True, "move_head": "b" * 40})
+        self.start()
+        done = self.wait(6)
+        self.assertEqual((done["result"], done["exit_code"]), ("head_moved", 6))
+        self.assertEqual(done["live_head_sha"], "b" * 40)
+        self.assertEqual(done["expected_head_sha"], self.head)
+        self.assertIn("old head only", done["failure_note"])
+        self.assertEqual(self.log_lines(done)[-1], "exit=6")
+
+    def test_status_checks_the_live_head_every_time(self):
+        self.start()
+        self.assertEqual(self.wait(0)["result"], "reviewed")
+        self.write("head", "e" * 40)  # a push after the review finished
+        r = self.run_codex("--status", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        stale = json.loads(r.stdout.decode())
+        self.assertEqual((stale["status"], stale["result"], stale["live_head_sha"]), ("finished", "stale_head", "e" * 40))
+        self.assertEqual(stale["review_url"], "https://github.com/acme/widgets/pull/7#pullrequestreview-1")
+        self.assertEqual(self.wait(6)["result"], "stale_head")
+        self.write("head", "")  # gh can no longer report the head
+        self.assertEqual(self.wait(4)["result"], "verification_unavailable")
+
+    def test_head_moved_before_the_review_started(self):
+        self.write("head-after-first", "d" * 40)
+        self.start()
+        done = self.wait(6)
+        self.assertEqual((done["result"], done["live_head_sha"]), ("head_moved", "d" * 40))
+        self.assertIn("before the review started", done["failure_note"])
+        self.assertEqual(self.codex_calls("exec"), [])
+
+    def test_launcher_that_died_while_starting_does_not_hang(self):
+        # A record with no pid file, left by a launcher killed between the two writes.
+        os.makedirs(self.jobs)
+        os.makedirs(self.state)
+        prefix = os.path.join(self.jobs, "codex-review-widgets-pr7-20260101-000000")
+        record = {"version": 1, "kind": "codex-pr-review", "run_id": "r", "label": "codex-review-widgets-pr7",
+                  "host": "github.com", "owner": "acme", "repo": "widgets", "number": 7, "url": self.URL,
+                  "expected_head_sha": self.head, "requested_at": "2026-01-01T00:00:00Z", "result": "starting"}
+        with open(prefix + ".json", "w") as f:
+            json.dump(record, f)
+        with open(os.path.join(self.state, "codex-pr--github.com--acme--widgets--pr7.json"), "w") as f:
+            json.dump({"version": 1, "job": prefix, "url": self.URL}, f)
+        r = self.run_codex("--wait", "--json")
+        self.assertEqual(r.returncode, 4)
+        self.assertEqual(json.loads(r.stdout.decode())["status"], "interrupted")
+        # and it neither blocks nor suppresses a fresh start
+        started = self.start()
+        self.assertFalse(started.get("duplicate_suppressed"))
+        self.assertEqual(self.wait(0)["result"], "reviewed")
+        self.assertEqual(stat.S_IMODE(os.stat(started["log"]).st_mode), 0o600)
+
+    @unittest.skipIf(sys.platform.startswith("win"), "the start lock needs fcntl")
+    def test_concurrent_start_is_refused(self):
+        import fcntl
+        os.makedirs(self.state)
+        lock = os.open(os.path.join(self.state, "codex-pr--github.com--acme--widgets--pr7.json.lock"),
+                       os.O_RDWR | os.O_CREAT)
+        fcntl.flock(lock, fcntl.LOCK_EX)  # another start between reading and writing the job pointer
+        try:
+            r = self.run_codex()
+        finally:
+            os.close(lock)
+        self.assertEqual(r.returncode, 4, r.stderr.decode())
+        self.assertIn(b"in progress", r.stderr)
+        self.assertEqual(self.codex_calls("exec"), [])
+        self.assertFalse(os.path.exists(self.jobs))
+
+    def test_unpublished_or_wrong_head_review_does_not_count(self):
+        # A REQUEST_CHANGES review breaks the COMMENT-only contract, so it does not count either.
+        for cfg in ({"publish": False}, {"publish": True, "publish_head": "c" * 40},
+                    {"publish": True, "publish_state": "CHANGES_REQUESTED"}):
+            with self.subTest(cfg=cfg):
+                self.write("reviews.json", "[]")
+                self.configure(cfg)
+                self.start()
+                done = self.wait(7)
+                self.assertEqual((done["result"], done["review_url"]), ("not_published", None))
+                self.assertEqual(self.log_lines(done)[-1], "exit=7")
+
+    def test_failed_codex_run_is_reported(self):
+        self.configure({"exit": 1, "publish": False})
+        self.start()
+        done = self.wait(4)
+        self.assertEqual((done["result"], done["failure_note"]), ("failed", "exit 1"))
+        self.configure({"sleep": 20, "publish": True})
+        self.start(extra={"AGENT_PR_REVIEW_LINK_CODEX_TIMEOUT": "1"})
+        done = self.wait(4)
+        self.assertEqual(done["result"], "timed_out")
+        self.assertRaises(OSError, os.kill, self.read_pid("codex.pid"), 0)
+
+    def test_status_reports_running_then_interrupted(self):
+        self.configure({"sleep": 30, "publish": True})
+        started = self.start()
+        deadline = time.time() + 10
+        while self.read_pid("codex.pid") is None and time.time() < deadline:
+            time.sleep(0.05)
+        r = self.run_codex("--status", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        running = json.loads(r.stdout.decode())
+        self.assertEqual((running["status"], running["result"], running["pid"]), ("running", None, started["pid"]))
+        r = self.run_codex("--status")
+        self.assertIn(b"Wait command: agent-pr-review-link codex --wait", r.stdout)
+        # A duplicate start for the same head is suppressed rather than relaunched.
+        again = self.start()
+        self.assertTrue(again["duplicate_suppressed"])
+        self.assertEqual(len(self.codex_calls("exec")), 1)
+        os.kill(started["pid"], signal.SIGKILL)  # the one stop the job cannot record
+        time.sleep(0.2)
+        r = self.run_codex("--status", "--json")
+        gone = json.loads(r.stdout.decode())
+        self.assertEqual((gone["status"], gone["result"], gone["exit_code"]), ("interrupted", "interrupted", None))
+        self.assertNotEqual(self.log_lines(gone)[-1][:5], "exit=")
+        r = self.run_codex("--wait")
+        self.assertEqual(r.returncode, 4)
+
+    def test_orphaned_reviewer_blocks_a_relaunch(self):
+        self.configure({"sleep": 30, "publish": True})
+        started = self.start()
+        deadline = time.time() + 10
+        while self.read_pid("codex.pid") is None and time.time() < deadline:
+            time.sleep(0.05)
+        os.kill(started["pid"], signal.SIGKILL)  # the job dies; its reviewer, in its own session, does not
+        time.sleep(0.2)
+        gone = json.loads(self.run_codex("--status", "--json").stdout.decode())
+        self.assertEqual((gone["status"], gone["orphan_codex_pid"]), ("interrupted", self.read_pid("codex.pid")))
+        r = self.run_codex()
+        self.assertEqual(r.returncode, 4, r.stderr.decode())
+        self.assertIn(b"could still publish", r.stderr)
+        self.assertEqual(len(self.codex_calls("exec")), 1)
+        os.kill(self.read_pid("codex.pid"), signal.SIGKILL)
+        deadline = time.time() + 10
+        while pid_running(self.read_pid("codex.pid")) and time.time() < deadline:
+            time.sleep(0.05)
+        self.configure({"publish": True})
+        self.start()
+        self.assertEqual(self.wait(0)["result"], "reviewed")
+
+    def test_stopped_job_stops_the_reviewer(self):
+        self.configure({"sleep": 30, "publish": True})
+        started = self.start()
+        deadline = time.time() + 10
+        while self.read_pid("codex.pid") is None and time.time() < deadline:
+            time.sleep(0.05)
+        os.kill(started["pid"], signal.SIGTERM)
+        deadline = time.time() + 10
+        while pid_running(started["pid"]) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertRaises(OSError, os.kill, self.read_pid("codex.pid"), 0)
+        gone = json.loads(self.run_codex("--status", "--json").stdout.decode())
+        self.assertEqual((gone["status"], gone["result"]), ("interrupted", "interrupted"))
+
+    def test_job_that_cannot_start_exits_8(self):
+        r = self.run_codex(extra={"AGENT_PR_REVIEW_LINK_JOB_PYTHON": os.path.join(self.root, "no-python")})
+        self.assertEqual(r.returncode, 8, r.stderr.decode())
+        self.assertIn(b"failed to start", r.stderr)
+        (log,) = [n for n in os.listdir(self.jobs) if n.endswith(".log")]
+        with open(os.path.join(self.jobs, log)) as f:
+            self.assertEqual(f.read().splitlines()[-1], "exit=8")
+        self.assertEqual(self.codex_calls("exec"), [])
+
+    def test_needs_a_checkout_and_an_open_pr_and_gh(self):
+        r = self.run_codex(folder=False)
+        self.assertEqual(r.returncode, 4)
+        self.assertIn(b"local checkout", r.stderr)
+        self.write("pr-state", "MERGED")
+        r = self.run_codex()
+        self.assertEqual(r.returncode, 4)
+        self.assertIn(b"merged", r.stderr)
+        os.remove(os.path.join(self.root, "pr-state"))
+        self.write("no-gh-auth", "")
+        r = self.run_codex()
+        self.assertEqual(r.returncode, 4)
+        self.assertIn(b"gh is not signed in", r.stderr)
+        self.assertEqual(self.codex_calls("exec"), [])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "hook trust is read with tomllib")
+    def test_trusted_hooks_carry_over_and_nothing_else(self):
+        os.makedirs(os.path.join(self.root, ".codex"))
+        self.write(os.path.join(".codex", "config.toml"), textwrap.dedent("""\
+            model = "should-not-pass"
+            [hooks.state."/h/hooks.json:session_start:0:0"]
+            trusted_hash = "sha256:abc"
+            enabled = true
+            [hooks.state."/h/hooks.json:stop:0:0"]
+            trusted_hash = "sha256:off"
+            enabled = false
+            """))
+        self.start()
+        self.wait(0)
+        args = self.codex_calls("exec")[0]["args"]
+        configs = [args[i + 1] for i, a in enumerate(args) if a == "-c"]
+        self.assertIn('hooks.state={"/h/hooks.json:session_start:0:0"={trusted_hash="sha256:abc", enabled=true}}',
+                      configs)
+        self.assertNotIn("should-not-pass", " ".join(args))
+
+    def test_mode_flags(self):
+        for args in (("--start",), ("--follow-up",), ("--wait", "--open"), ("--interactive", "--link"),
+                     ("--json", "--link"), ("--status", "--url")):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_codex(*args).returncode, 2)
+        r = self.run_codex("--status")
+        self.assertEqual(r.returncode, 4)
+        self.assertIn(b"no headless Codex review job", r.stderr)
+        r = self.env.run("claude", "--wait", self.URL)
+        self.assertEqual(r.returncode, 2)
+
+    def test_interactive_is_the_old_open_behaviour(self):
+        self.env.stub_opener()
+        outputs = []
+        for flag in ("--interactive", "--open"):
+            r = self.run_codex(flag, "--no-lookup", folder=False)
+            self.assertEqual(r.returncode, 0, r.stderr.decode())
+            outputs.append(r.stdout)
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertTrue(outputs[0].startswith(b"Opened Codex with a review request for PR #7 prefilled; "
+                                              b"press Enter there to start it."))
+        calls = self.env.open_calls()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], calls[1])
+        self.assertTrue(calls[0].split(" ")[-1].startswith("codex://new?prompt="))
+        # Neither opens a headless run, and the prefilled prompt is the interactive one.
+        self.assertEqual(self.codex_calls(), [])
+        self.assertNotIn("unattended", unquote(calls[0]))
+        self.env.stub_opener(exit_code=1)
+        self.assertEqual(self.run_codex("--interactive", "--no-lookup", folder=False).returncode, 3)
+        self.assertEqual(self.run_codex("--open", "--no-lookup", folder=False).returncode, 3)
+
+    def test_link_prints_what_a_bare_codex_call_used_to(self):
+        r = self.run_codex("--link", "--title", "T", folder=False)
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        self.assertTrue(r.stdout.startswith(b"[Ask Codex to review PR #7 (acme/widgets)](https://chatgpt.com/codex/open-app?q="))
+        self.assertEqual(self.codex_calls(), [])
+
+
+class CodexJobSummaryRaceTests(unittest.TestCase):
+    """A job that finishes while --status reads it is never half-reported."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="aprl-race-")
+        self.helper = runpy.run_path(HELPER)
+        self.globals = self.helper["codex_job_summary"].__globals__
+        self.prefix = os.path.join(self.dir, "codex-review-x-pr1-20260101-000000-abcd1234")
+        self.job = {"version": 1, "kind": "codex-pr-review", "result": "running", "url": "u",
+                    "requested_at": "2026-01-01T00:00:00Z"}
+        self.helper["write_state"](self.prefix + ".json", self.job, private_dir=False)
+        with open(self.prefix + ".log", "w") as f:
+            f.write("[t] reviewing\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def finish(self):
+        # The job's own order: the final record, then the exit line, then it exits.
+        self.helper["write_state"](self.prefix + ".json", dict(self.job, result="reviewed"), private_dir=False)
+        with open(self.prefix + ".log", "a") as f:
+            f.write("exit=0\n")
+
+    def test_finishing_between_reads(self):
+        real_log, alive = self.globals["log_exit_code"], [True]
+        def pid_check(prefix):
+            return 1, alive[0]
+        for moment in ("before the log", "after the pid check"):
+            with self.subTest(moment=moment):
+                self.setUp()
+                def log_read(prefix, moment=moment):
+                    if moment == "before the log":
+                        self.finish()
+                    else:
+                        self.finish()
+                        alive[0] = False
+                    return real_log(prefix)
+                with mock.patch.dict(self.globals, {"log_exit_code": log_read, "job_pid_running": pid_check}):
+                    summary = self.helper["codex_job_summary"](self.prefix)
+                self.assertEqual((summary["status"], summary["result"], summary["exit_code"]),
+                                 ("finished", "reviewed", 0))
+                alive[0] = True
+
+
+def pid_running(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:  # a zombie child of this test process still answers kill(0)
+        return os.waitpid(pid, os.WNOHANG) == (0, 0)
+    except ChildProcessError:
+        return True
 
 
 if __name__ == "__main__":
