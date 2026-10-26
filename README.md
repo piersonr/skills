@@ -141,7 +141,9 @@ automatic Claude modes also need Claude Code.
 The default Codex PR review needs a current Codex CLI (`codex`) signed in with
 ChatGPT. It refuses to start with an API-key login, and it never runs in CI. It
 runs as a background job, with its log and PID under `~/.local/state/agent-jobs/`.
-The reviewer publishes its own review on the PR.
+The reviewer publishes its own review on the PR. Its filesystem is read-only, but
+it publishes with your `gh` token, which can also push or merge; only its
+instructions keep it to one review.
 
 The `--interactive` handoff needs the Codex desktop app. The automatic Codex QA
 modes need the signed-in CLI as well.

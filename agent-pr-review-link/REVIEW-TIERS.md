@@ -188,7 +188,8 @@ exists, request the review through the reviewing lineage's own CLI:
   run from the PR's checkout, starts a headless Codex review in the background
   on the user's ChatGPT login, never an API key. Its filesystem is read-only, it
   reviews the exact head resolved at launch, and it publishes its own review in
-  its own session. Verify it with `agent-pr-review-link codex --status --json
+  its own session. Its GitHub token can write, so only its instructions keep it
+  to that one review. Verify it with `agent-pr-review-link codex --status --json
   <full-pr-url>`: only a `finished` job with result `reviewed` counts. A job
   that reports `head_moved`, `not_published`, `failed` or `interrupted` is not a
   review. `--interactive` is the opt-out. It opens the Codex app with the request

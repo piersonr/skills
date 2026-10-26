@@ -13,7 +13,10 @@ command. The reviewer reviews the head resolved from the PR when the job
 starts, and publishes its own COMMENT review on the PR, in its own session, the
 way the repository's instructions require. It works in Codex's :read-only
 permission profile. Its filesystem is read-only and its shell can reach only
-the PR's GitHub host. The helper refuses to start unless `codex login status`
+the PR's GitHub host. It is not read-only on GitHub: it publishes with the
+user's own gh token, which can also push, merge, or edit the PR. Only its
+instructions hold it to one review, so treat the PR's content as able to try to
+steer it. The helper refuses to start unless `codex login status`
 reports a ChatGPT login, and it never starts inside CI. The reviewer's
 environment is an allowlist, so no OPENAI_API_KEY, OpenRouter, or other API key
 reaches it. The job checks the live head again after the run. It reports
@@ -495,13 +498,15 @@ def read_state(path):
     return data
 
 
-def write_state(path, data):
+def write_state(path, data, private_dir=True):
+    """PRIVATE_DIR makes the directory owner-only; a shared one, like the jobs directory, keeps its mode."""
     directory = os.path.dirname(path)
     os.makedirs(directory, mode=0o700, exist_ok=True)
-    try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
+    if private_dir:
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
     temp = "%s.tmp.%d.%s" % (path, os.getpid(), uuid.uuid4().hex)
     fd = None
     try:
@@ -687,14 +692,14 @@ def list_github_reviews(host, owner, repo, number):
 VERIFIED_REVIEW_STATES = ("COMMENTED", "CHANGES_REQUESTED")
 
 
-def find_verified_review(run, reviews):
+def find_verified_review(run, reviews, states=VERIFIED_REVIEW_STATES):
     if not isinstance(reviews, list):
         return None
     marker = run.get("review_marker") or ""
     expected_head = run.get("expected_head_sha")
     for review in reviews:
         if (marker in str(review.get("body") or "") and str(review.get("commit_id") or "") == expected_head
-                and review.get("state") in VERIFIED_REVIEW_STATES and review.get("submitted_at")):
+                and review.get("state") in states and review.get("submitted_at")):
             user = review.get("user") if isinstance(review.get("user"), dict) else {}
             return {
                 "id": review.get("id"),
@@ -1730,7 +1735,8 @@ def codex_hook_trust():
         return []
     hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
     state = hooks.get("state") if isinstance(hooks.get("state"), dict) else {}
-    parts = ["%s={trusted_hash=%s, enabled=true}" % (json.dumps(key), json.dumps(value["trusted_hash"]))
+    parts = ["%s={trusted_hash=%s, enabled=true}" % (json.dumps(key, ensure_ascii=False),
+                                                     json.dumps(value["trusted_hash"], ensure_ascii=False))
              for key, value in sorted(state.items())
              if isinstance(value, dict) and value.get("enabled") is True
              and isinstance(value.get("trusted_hash"), str)]
@@ -1822,11 +1828,17 @@ def codex_job_summary(prefix):
         state = "finished"
     elif alive:
         state = "running"
+    elif pid is None and job.get("result") == "starting":
+        state = "starting"
     else:
         state = "interrupted"
     result = job.get("result")
     if state == "interrupted" and result in (None, "starting", "running"):
         result = "interrupted"
+    note = job.get("failure_note")
+    if state == "interrupted" and pid_alive(job.get("codex_pid")):
+        note = ((note + "; ") if note else "") + (
+            "its Codex process (pid %s) may still be running and could still publish" % job["codex_pid"])
     return {
         "status": state,
         "result": result if state != "running" else None,
@@ -1840,7 +1852,7 @@ def codex_job_summary(prefix):
         "verified_review": job.get("verified_review"),
         "codex_thread_id": job.get("codex_thread_id"),
         "codex_model": job.get("codex_model"),
-        "failure_note": job.get("failure_note"),
+        "failure_note": note,
         "reviewer": "codex exec, :read-only permission profile, network limited to %s"
                     % ", ".join(job.get("network_domains") or ["GitHub"]),
         "run_id": job.get("run_id"),
@@ -1866,7 +1878,7 @@ def render_codex_job(summary, started=False):
         lines = ["Headless Codex review of PR #%s: %s." % (number, summary["status"])]
     if summary.get("review_url"):
         lines.append("Review: %s" % summary["review_url"])
-    if summary.get("failure_note") and summary["status"] != "running":
+    if summary.get("failure_note") and summary["status"] not in ("running", "starting"):
         lines.append("Note: %s" % summary["failure_note"])
     lines += [
         "Expected head: %s" % summary.get("expected_head_sha"),
@@ -1874,7 +1886,7 @@ def render_codex_job(summary, started=False):
         "PID: %s" % summary.get("pid"),
         "Status command: %s" % summary.get("status_command"),
     ]
-    if summary["status"] == "running":
+    if summary["status"] in ("running", "starting"):
         lines.append("Wait command: %s (exits with the job's code when it ends)" % summary.get("wait_command"))
     return "\n".join(lines)
 
@@ -1885,7 +1897,7 @@ def codex_pr_status(host, owner, repo, number, as_json, wait=False):
         raise OperationError("no headless Codex review job exists for this PR")
     prefix = pointer["job"]
     summary = codex_job_summary(prefix)
-    while wait and summary["status"] == "running":
+    while wait and summary["status"] in ("running", "starting"):
         time.sleep(float(os.environ.get("AGENT_PR_REVIEW_LINK_POLL_SECONDS") or PR_WAIT_POLL_SECONDS))
         summary = codex_job_summary(prefix)
     emit(summary, render_codex_job(summary), as_json)
@@ -1905,13 +1917,27 @@ def codex_headless_start(host, owner, repo, number, url, folder, title_override,
     if pr["state"] != "OPEN":
         raise OperationError("the pull request is %s; no review was started" % pr["state"].lower())
     pointer_path = codex_pr_pointer(host, owner, repo, number)
+    # Held from reading the pointer until the job is up, so two starts cannot both launch a review.
+    lock, free = qa_try_lock(pointer_path, wait=QA_LOCK_WAIT_SECONDS)
+    if not free:
+        raise OperationError("another start of a headless Codex review of this PR is in progress; "
+                             "check `agent-pr-review-link codex --status %s`" % url)
+    try:
+        return codex_headless_launch(host, owner, repo, number, url, folder, title_override, as_json,
+                                     pr, pointer_path)
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+def codex_headless_launch(host, owner, repo, number, url, folder, title_override, as_json, pr, pointer_path):
     pointer = read_state(pointer_path)
     if pointer and isinstance(pointer.get("job"), str):
         try:
             existing = codex_job_summary(pointer["job"])
         except OperationError:
             existing = None
-        if existing and existing["status"] == "running":
+        if existing and existing["status"] in ("running", "starting"):
             if existing["expected_head_sha"] != pr["head_sha"]:
                 raise OperationError("a headless Codex review of an earlier head (%s) is still running; "
                                      "wait for it, or check %s" % (existing["expected_head_sha"],
@@ -1924,7 +1950,7 @@ def codex_headless_start(host, owner, repo, number, url, folder, title_override,
     run_id = str(uuid.uuid4())
     label = "codex-review-%s-pr%d" % (re.sub(r"[^A-Za-z0-9._-]", "_", repo.lower())[:60], number)
     directory = jobs_dir()
-    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.makedirs(directory, mode=0o700, exist_ok=True)  # an existing, shared directory keeps its mode
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     prefix = os.path.join(directory, "%s-%s" % (label, stamp))
     suffix = 2
@@ -1944,7 +1970,7 @@ def codex_headless_start(host, owner, repo, number, url, folder, title_override,
         "requested_at": utc_now(),
         "result": "starting",
     }
-    write_state(prefix + ".json", job)
+    write_state(prefix + ".json", job, private_dir=False)
     write_state(pointer_path, {"version": STATE_VERSION, "job": prefix, "url": url, "updated_at": utc_now()})
     python = os.environ.get("AGENT_PR_REVIEW_LINK_JOB_PYTHON") or sys.executable
     argv = [python, os.path.realpath(__file__), "codex", "--run-job", prefix]
@@ -1955,7 +1981,7 @@ def codex_headless_start(host, owner, repo, number, url, folder, title_override,
                                 stderr=subprocess.STDOUT, start_new_session=True)
     except OSError as exc:
         job.update(result="failed_to_start", failure_note="could not start the job (%s)" % exc.__class__.__name__)
-        write_state(prefix + ".json", job)
+        write_state(prefix + ".json", job, private_dir=False)
         if log is not None:
             log.write(b"could not start the review job\nexit=%d\n" % EXIT_JOB_START)
         raise CodedError(EXIT_JOB_START, "the headless review job failed to start (%s); log: %s.log"
@@ -1977,12 +2003,12 @@ def codex_headless_start(host, owner, repo, number, url, folder, title_override,
         if proc.poll() is None:
             stop_process(proc)
         job.update(result="failed_to_start", failure_note="the job did not come up")
-        write_state(prefix + ".json", job)
+        write_state(prefix + ".json", job, private_dir=False)
         with open(prefix + ".log", "ab") as handle:
             handle.write(b"the review job did not come up\nexit=%d\n" % EXIT_JOB_START)
         raise CodedError(EXIT_JOB_START, "the headless review job failed to start; log: %s.log" % prefix)
     summary = codex_job_summary(prefix)
-    emit(summary, render_codex_job(summary, started=True), as_json)
+    emit(summary, render_codex_job(summary, started=summary["status"] == "running"), as_json)
     return 0
 
 
@@ -1998,7 +2024,7 @@ def codex_run_job(prefix):
         raise UsageError("--run-job is internal; its job must be in %s" % directory)
     job = read_job(prefix)
     job.update(result="running", runner_pid=os.getpid(), started_at=utc_now())
-    write_state(prefix + ".json", job)
+    write_state(prefix + ".json", job, private_dir=False)
 
     def on_stop(signum, frame):
         raise Interrupted()
@@ -2017,12 +2043,15 @@ def codex_run_job(prefix):
         job.update(result=job.get("result") if job.get("result") not in ("running", None) else "failed",
                    failure_note=one_line(str(exc)))
         code = exc.code
+    except Exception as exc:
+        job.update(result="failed", failure_note="the job failed unexpectedly (%s)" % exc.__class__.__name__)
+        code = 4
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
         job["finished_at"] = utc_now()
         job["exit_code"] = code
-        write_state(prefix + ".json", job)
+        write_state(prefix + ".json", job, private_dir=False)
         job_log("result: %s%s" % (job.get("result"), ("; " + job["failure_note"]) if job.get("failure_note") else ""))
         if (job.get("verified_review") or {}).get("url"):
             job_log("review: %s" % job["verified_review"]["url"])
@@ -2060,7 +2089,7 @@ def codex_run_review(job, prefix):
         proc = subprocess.Popen(argv, cwd=job["folder"], stdin=subprocess.PIPE, env=env,
                                 start_new_session=True)
         job["codex_pid"] = proc.pid
-        write_state(prefix + ".json", job)
+        write_state(prefix + ".json", job, private_dir=False)
         proc.communicate(prompt.encode("utf-8"), timeout=timeout)
         outcome = "ok" if proc.returncode == 0 else "exit %d" % proc.returncode
     except OSError as exc:
@@ -2096,7 +2125,7 @@ def codex_run_review(job, prefix):
     pr = lookup_pr(url)
     job["live_head_sha"] = pr["head_sha"]
     reviews = list_github_reviews(host, job["owner"], job["repo"], job["number"])
-    verified = find_verified_review(job, reviews)
+    verified = find_verified_review(job, reviews, states=("COMMENTED",))
     if verified:
         job["verified_review"] = verified
     if pr["head_sha"] != expected:
@@ -2244,7 +2273,7 @@ def main(argv):
     link_mode = do_open or link_only or only_url or no_lookup or no_folder
     headless = target == "codex" and not link_mode
     automatic = do_start or do_follow_up or do_status or do_wait
-    if automatic and (only_url or no_folder or no_lookup):
+    if automatic and (only_url or no_folder or (no_lookup and target == "codex")):
         raise UsageError("--url, --no-lookup, and --no-folder are desktop-link options, not automatic review options")
     if as_json and not (automatic or headless):
         raise UsageError("--json is available only with a headless Codex review, --start, --follow-up, --status, or --wait")

@@ -1312,7 +1312,11 @@ args = sys.argv[1:]
 with open(root / "gh.log", "a") as f:
     f.write(json.dumps(args) + "\n")
 if args[:2] == ["pr", "view"]:
-    print(json.dumps({{"title": "Fixture change", "headRefOid": (root / "head").read_text().strip(),
+    head = (root / "head").read_text().strip()
+    if (root / "head-after-first").exists() and not (root / "head-moved").exists():
+        (root / "head").write_text((root / "head-after-first").read_text())  # moves after this answer
+        (root / "head-moved").write_text("")
+    print(json.dumps({{"title": "Fixture change", "headRefOid": head,
                       "state": (root / "pr-state").read_text().strip() if (root / "pr-state").exists() else "OPEN",
                       "url": args[2]}}))
 elif args[:2] == ["auth", "token"]:
@@ -1356,7 +1360,7 @@ if cfg.get("move_head"):
     (root / "head").write_text(cfg["move_head"])
 if cfg.get("publish"):
     (root / "reviews.json").write_text(json.dumps([{{
-        "body": "Summary.\n" + marker, "commit_id": cfg.get("publish_head", head), "state": "COMMENTED",
+        "body": "Summary.\n" + marker, "commit_id": cfg.get("publish_head", head), "state": cfg.get("publish_state", "COMMENTED"),
         "submitted_at": "2026-10-26T00:00:00Z", "html_url": "https://github.com/acme/widgets/pull/7#pullrequestreview-1",
         "user": {{"login": "reviewer"}}, "id": 1}}]))
 with open(args[args.index("-o") + 1], "w") as f:
@@ -1503,8 +1507,9 @@ class CodexHeadlessTests(unittest.TestCase):
         for name in ("prompt.txt", "gh.log"):
             with open(os.path.join(self.root, name)) as f:
                 self.assertNotIn("gho_FAKE", f.read())
-        with open(done["log"]) as f:
-            self.assertNotIn("gho_FAKE", f.read())
+        for path in (done["log"], done["record"]):
+            with open(path) as f:
+                self.assertNotIn("gho_FAKE", f.read())
         self.assertNotIn("sk-should-not-pass", json.dumps(done))
 
     def test_refuses_unless_logged_in_with_chatgpt(self):
@@ -1538,8 +1543,33 @@ class CodexHeadlessTests(unittest.TestCase):
         self.assertIn("old head only", done["failure_note"])
         self.assertEqual(self.log_lines(done)[-1], "exit=6")
 
+    def test_head_moved_before_the_review_started(self):
+        self.write("head-after-first", "d" * 40)
+        self.start()
+        done = self.wait(6)
+        self.assertEqual((done["result"], done["live_head_sha"]), ("head_moved", "d" * 40))
+        self.assertIn("before the review started", done["failure_note"])
+        self.assertEqual(self.codex_calls("exec"), [])
+
+    def test_concurrent_start_is_refused(self):
+        import fcntl
+        os.makedirs(self.state)
+        lock = os.open(os.path.join(self.state, "codex-pr--github.com--acme--widgets--pr7.json.lock"),
+                       os.O_RDWR | os.O_CREAT)
+        fcntl.flock(lock, fcntl.LOCK_EX)  # another start between reading and writing the job pointer
+        try:
+            r = self.run_codex()
+        finally:
+            os.close(lock)
+        self.assertEqual(r.returncode, 4, r.stderr.decode())
+        self.assertIn(b"in progress", r.stderr)
+        self.assertEqual(self.codex_calls("exec"), [])
+        self.assertFalse(os.path.exists(self.jobs))
+
     def test_unpublished_or_wrong_head_review_does_not_count(self):
-        for cfg in ({"publish": False}, {"publish": True, "publish_head": "c" * 40}):
+        # A REQUEST_CHANGES review breaks the COMMENT-only contract, so it does not count either.
+        for cfg in ({"publish": False}, {"publish": True, "publish_head": "c" * 40},
+                    {"publish": True, "publish_state": "CHANGES_REQUESTED"}):
             with self.subTest(cfg=cfg):
                 self.write("reviews.json", "[]")
                 self.configure(cfg)

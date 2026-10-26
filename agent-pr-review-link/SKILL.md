@@ -36,9 +36,12 @@ to use it is [REVIEW-TIERS.md](REVIEW-TIERS.md). Read it before choosing a tier.
      (with the result and the review URL) or `interrupted`.
      The reviewer runs `codex exec` on the ChatGPT login. It never uses an API
      key, and it never runs in CI. Its filesystem is read-only, and its shell can
-     reach only the PR's GitHub host. It reviews the head resolved when the job
-     started and publishes its own COMMENT review, the way the repository's
-     instructions require. For a re-review after fixes, run it again on the new
+     reach only the PR's GitHub host. It is not read-only on GitHub: it
+     publishes with the user's own `gh` token, which could also push or merge,
+     and only its instructions hold it to one review. It reviews the head
+     resolved when the job started and publishes its own COMMENT review, the way
+     the repository's instructions require. Hook-based publishers need Python
+     3.11 or newer, which carries the user's hook trust over. For a re-review after fixes, run it again on the new
      head.
      `--interactive` (formerly `--open`, which still works) is the opt-out. It
      opens the Codex app with the request typed in, and nothing is sent until the
