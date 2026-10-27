@@ -1,6 +1,6 @@
 # Skills
 
-Portable agent skills for coding agents such as Codex and Claude Code.
+Portable agent skills for coding agents, such as Codex and Claude Code.
 
 ## Available skills
 
