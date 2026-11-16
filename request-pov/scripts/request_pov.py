@@ -26,19 +26,20 @@ from typing import Any, Callable
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODELS = {
-    "anthropic": "anthropic/claude-sonnet-5",
-    "openai": "openai/gpt-5.6-terra",
+    "anthropic": "~anthropic/claude-opus-latest",
+    "openai": "~openai/gpt-sol-latest",
     "xai": "x-ai/grok-4.6",
 }
 # Maintained nickname -> exact slug. Each entry carries its lineage so a bare
 # `--model-class sol` can resolve without the caller naming a vendor. These are
 # hardcoded on purpose: a nickname is a local convention no catalog can resolve,
-# and fuzzy lookup would just automate the slug-guessing this tool forbids. The
-# cost is that they go stale silently -- review them when a generation ships.
+# and fuzzy lookup would just automate the slug-guessing this tool forbids.
+# Versioned entries can go stale -- review them when a generation ships. The
+# floating *-latest aliases instead follow the newest release in their family.
 MODEL_CLASSES = {
     "fable": {"slug": "~anthropic/claude-fable-latest", "lineage": "anthropic"},
     "grok": {"slug": "x-ai/grok-4.6", "lineage": "xai"},
-    "opus": {"slug": "anthropic/claude-opus-5", "lineage": "anthropic"},
+    "opus": {"slug": "~anthropic/claude-opus-latest", "lineage": "anthropic"},
     "sol": {"slug": "~openai/gpt-sol-latest", "lineage": "openai"},
     "sonnet": {"slug": "anthropic/claude-sonnet-5", "lineage": "anthropic"},
     "terra": {"slug": "openai/gpt-5.6-terra", "lineage": "openai"},
