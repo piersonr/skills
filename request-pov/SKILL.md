@@ -2,8 +2,9 @@
 name: request-pov
 description: >-
   Request an independent second opinion from a model in another AI lineage through
-  OpenRouter. Requires an explicit external signal — the user names another model,
-  lineage, vendor, or asks for a second/outside/independent opinion. DO NOT USE for a
+  OpenRouter. Requires an explicit skill invocation or external signal — the user
+  names another model, lineage, vendor, or asks for a second/outside/independent
+  opinion. DO NOT USE for a
   bare "POV", "your POV", "your take", "opinion", "thoughts", or "weigh in": an
   unqualified POV request means the current agent's own analysis, and reaching for an
   external model instead delivers the wrong thing. When in doubt, answer in your own
@@ -17,11 +18,12 @@ Use the bundled `scripts/request_pov.py` helper to consult an external model thr
 
 ## Workflow
 
-0. Confirm an external model is actually wanted. The request must name another model, lineage, or vendor, or ask for a second/outside/independent opinion. A bare "POV", "your take", or "thoughts?" is a request for your own analysis — answer it yourself and stop here. Invoking this skill with a named model or vendor — for example, `request-pov Grok`, `request-pov Sonnet`, or `request-pov Opus` — is destination-specific authorization to send an ordinary non-secret evidence packet to that destination through OpenRouter.
+0. Confirm an external model is actually wanted. The request must explicitly invoke `request-pov`, name another model, lineage, or vendor, or ask for a second/outside/independent opinion. An explicit skill invocation without a model uses the caller-specific defaults below. A bare "POV", "your take", or "thoughts?" is a request for your own analysis — answer it yourself and stop here. Invoking this skill authorizes sending an ordinary non-secret evidence packet through OpenRouter to the named destination, or to the caller-specific default when no destination is named.
 1. Identify the requested reviewer. When the user names a **model class** — `sol`, `terra`, `opus`, `sonnet`, `fable`, `grok` — pass it straight through as `--model-class <name>` and omit `--lineage`; the nickname resolves to an exact slug and implies its lineage. `/request-pov sol` needs no translation.
 
-   `fable` resolves to `~anthropic/claude-fable-latest` in the Anthropic lineage and
-   `sol` to `~openai/gpt-sol-latest` in the OpenAI lineage, so both track the newest
+   `opus` resolves to `~anthropic/claude-opus-latest` and `fable` to
+   `~anthropic/claude-fable-latest` in the Anthropic lineage; `sol` resolves to
+   `~openai/gpt-sol-latest` in the OpenAI lineage. All three track the newest
    release; preserve the leading `~` in the model slug. A floating class can change
    reviewer behaviour, price, and latency with no change here, so when a review must be
    repeatable, pin it instead: `--lineage openai --model openai/gpt-6.1-sol`. The
@@ -29,10 +31,11 @@ Use the bundled `scripts/request_pov.py` helper to consult an external model thr
 
    Pass `--caller-lineage <your own lineage>` on every call. The helper refuses a target in the same lineage, which is the one thing that would silently turn a cross-lineage review into a self-review. Use `--allow-same-lineage` only when a same-family second opinion is what the user actually asked for, and never describe that result as cross-lineage.
 
-   Otherwise identify the requested lineage. If none is named, select a lineage different from the current agent:
-   - Grok/xAI requested: use `xai`.
-   - OpenAI-hosted agent: default to `anthropic`.
-   - Anthropic-hosted agent: default to `openai`.
+   When no model is specified, use these defaults; an explicit model or model class always wins:
+   - Codex / OpenAI-hosted agent, with no destination named: use `--model-class opus --caller-lineage openai` (latest Opus).
+   - Claude / Anthropic-hosted agent, with no destination named: use `--model-class sol --caller-lineage anthropic` (latest Sol).
+   - Only Anthropic or OpenAI is requested: use `--model-class opus` or `--model-class sol`, respectively, with your own `--caller-lineage`.
+   - Grok/xAI requested: use `--lineage xai` with your own `--caller-lineage`.
    - Unknown host lineage: ask the user which lineage they want.
 2. Build a self-contained question containing the decision, constraints, evidence, and the kind of challenge desired. Do not imply that the external model can inspect the workspace.
 3. Select context deliberately:
@@ -133,8 +136,8 @@ The helper:
 - reads settings in precedence order from the process environment, an explicit
   `--env-file`, the nearest project `.env`, and the caller-independent user config at
   `~/.config/request-pov/.env` (or `$XDG_CONFIG_HOME/request-pov/.env`);
-- defaults to `anthropic/claude-sonnet-5` for Anthropic,
-  `openai/gpt-5.6-terra` for OpenAI, and `x-ai/grok-4.6` for xAI;
+- defaults to `~anthropic/claude-opus-latest` for Anthropic,
+  `~openai/gpt-sol-latest` for OpenAI, and `x-ai/grok-4.6` for xAI;
 - resolves `--model-class` from a maintained nickname table (`fable`, `grok`, `opus`, `sol`,
   `sonnet`, `terra`), each entry carrying its own lineage so `--lineage` may be omitted;
   a `--lineage` that contradicts the class is rejected;

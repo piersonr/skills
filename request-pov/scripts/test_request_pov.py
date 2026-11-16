@@ -791,7 +791,7 @@ class RequestPovTests(PovFixture):
         self.assertEqual(request_pov.EXIT_VALIDATION, status)
         self.assertEqual("model_lineage_mismatch", json.loads(stdout)["diagnostic_code"])
 
-    def test_opus_model_class_resolves_to_opus_5(self) -> None:
+    def test_opus_model_class_resolves_to_floating_latest_alias(self) -> None:
         stdout = io.StringIO()
         with mock.patch.dict(os.environ, {}, clear=True), redirect_stdout(stdout):
             status = request_pov.run(
@@ -799,7 +799,7 @@ class RequestPovTests(PovFixture):
             )
         result = json.loads(stdout.getvalue())
         self.assertEqual(0, status)
-        self.assertEqual("anthropic/claude-opus-5", result["requested_model"])
+        self.assertEqual("~anthropic/claude-opus-latest", result["requested_model"])
 
     def test_explicit_opus_class_precedes_stale_environment_override(self) -> None:
         stdout = io.StringIO()
@@ -813,7 +813,33 @@ class RequestPovTests(PovFixture):
             )
         result = json.loads(stdout.getvalue())
         self.assertEqual(0, status)
-        self.assertEqual("anthropic/claude-opus-5", result["requested_model"])
+        self.assertEqual("~anthropic/claude-opus-latest", result["requested_model"])
+
+    def test_unspecified_models_default_to_latest_opus_and_sol(self) -> None:
+        for caller, target, expected in (
+            ("openai", "anthropic", "~anthropic/claude-opus-latest"),
+            ("anthropic", "openai", "~openai/gpt-sol-latest"),
+        ):
+            with self.subTest(caller=caller), mock.patch.dict(os.environ, {}, clear=True):
+                status, stdout, _ = self.invoke(
+                    ["--caller-lineage", caller, "--lineage", target,
+                     "--prompt", "review this", "--dry-run", "--json"]
+                )
+                self.assertEqual(0, status)
+                self.assertEqual(expected, json.loads(stdout)["requested_model"])
+
+    def test_explicit_model_precedes_latest_default(self) -> None:
+        for caller, target, model in (
+            ("openai", "anthropic", "anthropic/claude-opus-5"),
+            ("anthropic", "openai", "openai/gpt-6.1-sol"),
+        ):
+            with self.subTest(caller=caller), mock.patch.dict(os.environ, {}, clear=True):
+                status, stdout, _ = self.invoke(
+                    ["--caller-lineage", caller, "--lineage", target,
+                     "--model", model, "--prompt", "review this", "--dry-run", "--json"]
+                )
+                self.assertEqual(0, status)
+                self.assertEqual(model, json.loads(stdout)["requested_model"])
 
     def test_opus_model_class_rejects_non_anthropic_lineage(self) -> None:
         status, stdout, _stderr = self.invoke(

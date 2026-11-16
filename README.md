@@ -63,8 +63,10 @@ Use /request-pov to ask an OpenAI model for a second opinion on this architectur
 You can also ask naturally: “Get a cross-lineage POV on this diff” or “What would
 Anthropic challenge about this approach?”
 
-The skill defaults to an Anthropic model when called from an OpenAI agent and an
-OpenAI model when called from an Anthropic agent, and supports xAI as a third
+Without a specified model, the skill defaults to the latest Opus when called from
+Codex / an OpenAI agent and the latest Sol when called from Claude / an Anthropic
+agent. It uses OpenRouter's `~anthropic/claude-opus-latest` and
+`~openai/gpt-sol-latest` aliases to follow new releases, and supports xAI as a third
 lineage. You can also name a model class directly — `opus`, `sonnet`, `terra`,
 `sol`, or `grok` — and the helper resolves the nickname to a current slug and its
 lineage:
